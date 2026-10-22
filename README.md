@@ -23,7 +23,7 @@ cectcls prepare --cases data/cases.csv --splits data/splits.csv --out runs/class
 cectcls train --manifest runs/class/manifests/cases.jsonl --labels runs/class/manifests/labels.json --stage selection --model dinov2s_mil --epochs 30 --out runs/class/selection
 cectcls export-selection --manifest runs/class/manifests/cases.jsonl --checkpoint runs/class/selection/best.pt --top-k 16 --out runs/class/manifests/selected_bags.json
 cectcls match-ncct --manifest runs/class/manifests/cases.jsonl --selection runs/class/manifests/selected_bags.json --radius-mm 15 --out runs/class/manifests/matched_bags.json
-cectcls export-syn-requests --matched runs/class/manifests/matched_bags.json --out-root runs/class/syn --out runs/class/manifests/synthetic_requests.json
+cectcls export-syn-requests --manifest runs/class/manifests/cases.jsonl --matched runs/class/manifests/matched_bags.json --out-root runs/class/syn --out runs/class/manifests/synthetic_requests.json
 # External NCCT->AP/PVP generator: read synthetic_requests.json, write HU-valued float32 .npy images to the prescribed output paths.
 cectcls register-syn --requests runs/class/manifests/synthetic_requests.json --out runs/class/manifests/syn_index.json
 cectcls train --manifest runs/class/manifests/cases.jsonl --labels runs/class/manifests/labels.json --stage selected --selection runs/class/manifests/matched_bags.json --syn-index runs/class/manifests/syn_index.json --group cect_real_syn --model dinov2s_mil --out runs/class/real_syn
@@ -34,8 +34,8 @@ cectcls evaluate --manifest runs/class/manifests/cases.jsonl --labels runs/class
 
 `match-ncct` searches near the fixed-space reference plane with NMI, NCC and a physical-distance penalty, plus a nondecreasing sequence constraint. A similarity score alone is not evidence of anatomical correspondence; inspect `matching_status` and QC before synthesis. AP and PVP are synthesized from the **same matched NCCT slice**, while the original Real target IDs are kept unchanged.
 
-Use `--model resnet18_mil|deit_mil|dinov2s_mil`, `--group ncct|cect_real|cect_syn|cect_real_aug|cect_real_syn`. For real_aug and real_syn, the original and augmented/synthetic examples are added at 1:1 within each epoch. Training/validation/test always split by patient. For contrast-enhanced groups validation and test inputs are Real CECT; NCCT group is evaluated on NCCT.
+Use `--model resnet18_mil|deit_mil|dinov2s_mil`, `--group ncct|cect_real|cect_syn|cect_real_aug|cect_real_syn`. For real_aug and real_syn, a balanced patient sampler assigns approximately half the patients to the original view and half to the augmented/synthetic view each epoch (exact 1:1 when the train patient count is even). Each patient contributes one example per epoch, keeping training steps comparable to REAL. Training/validation/test always split by patient. For contrast-enhanced groups validation and test inputs are Real CECT; NCCT group is evaluated on NCCT.
 
-**Pretrained backbones**: set `--pretrained` to enable timm weights (may download); for offline experiments pre-download weights or supply a model-cache. Default is uninitialized weights; report this choice in the paper. The external synthesis implementation and clinical truth annotation are not included.
+**Pretrained backbones**: set `--pretrained` to enable timm weights (may download); for offline experiments pre-download weights or supply a model-cache. Default is uninitialized weights; report this choice in the paper. The external synthesis implementation and clinical truth annotation are not included. The synthesis request JSON explicitly includes the NCCT NIfTI path, matched axial slice ID, target phase and expected output path. Matching statuses are provisional until checked against anatomical landmarks; do not treat a high correlation alone as validated alignment.
 
 Tests: `pytest -q`.

@@ -65,7 +65,7 @@ def _split_cases(cases, train_ratio, val_ratio, seed):
 
 
 def build_cohort(metadata, image_root, out, label_column="三分类标签",
-                 grades=("GOLD", "SILVER"), train_ratio=0.70,
+                 grades=("GOLD", "SILVER", "REJECT"), train_ratio=0.70,
                  val_ratio=0.15, seed=42, require_mask=True):
     """Filter classification=yes, valid labels & grades, existing inputs, then split patient-wise."""
     if label_column not in {"三分类标签", "主类别"}:

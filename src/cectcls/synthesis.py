@@ -8,7 +8,7 @@ import numpy as np
 from .manifest import read_json, read_jsonl, write_json
 
 
-def export_requests(matched, output_root, out, manifest=None, split="train"):
+def export_requests(matched, output_root, out, manifest=None, split="all"):
     patients = read_json(matched)
     patient_cases = {row["patient_id"]: row for row in read_jsonl(manifest)} if manifest else {}
     if manifest and any(row["patient_id"] not in patient_cases for row in patients):

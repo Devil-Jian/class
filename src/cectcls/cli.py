@@ -38,6 +38,7 @@ def _training_options(parser, include_stage=True):
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--class-weight", choices=["sqrt", "none"], default="sqrt")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

@@ -87,6 +87,7 @@ def make_parser():
     p = sub.add_parser("export-syn-requests")
     p.add_argument("--manifest", required=True)
     p.add_argument("--matched", required=True)
+    p.add_argument("--split", choices=["train", "val", "test", "all"], default="train")
     p.add_argument("--out-root", required=True)
     p.add_argument("--out", required=True)
 
@@ -135,7 +136,7 @@ def main(argv=None):
     elif args.command == "match-ncct":
         print(f"Matched {len(match_ncct(args.manifest, args.selection, args.out, args.radius_mm, args.stride))} patients")
     elif args.command == "export-syn-requests":
-        print(f"Exported {len(export_requests(args.matched, args.out_root, args.out, args.manifest))} requests")
+        print(f"Exported {len(export_requests(args.matched, args.out_root, args.out, args.manifest, args.split))} requests")
     elif args.command == "export-png":
         print(f"Exported {len(export_png(args.manifest, args.selection, args.out, args.syn_index))} PNGs")
     elif args.command == "register-syn":

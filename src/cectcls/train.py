@@ -45,7 +45,32 @@ def compute_metrics(y_true, probabilities, n_classes):
     return result
 
 
-def evaluate_model(model, loader, device, n_classes, return_predictions=False):
+PRIMARY_TO_THREE = {"正常": 0, "肝囊肿": 1, "血管瘤": 1, "HCC": 2, "转移瘤": 2}
+
+
+def summarize_three_class(y_true, probabilities, label_map):
+    """Derive normal/benign/malignant from five-disease patient probabilities."""
+    if set(label_map) != set(PRIMARY_TO_THREE):
+        return None
+    inverse = {int(value): name for name, value in label_map.items()}
+    y = np.asarray([PRIMARY_TO_THREE[inverse[int(k)]] for k in y_true], dtype=int)
+    new_probs = np.zeros((len(probabilities), 3), dtype=float)
+    for name, index in label_map.items():
+        new_probs[:, PRIMARY_TO_THREE[name]] += probabilities[:, int(index)]
+    return compute_metrics(y, new_probs, 3), new_probs
+
+
+def sqrt_class_weights(cases, n_classes, device, cap=3.0):
+    """Training-patient-only sqrt inverse-frequency weighting, capped and normalized."""
+    counts = np.bincount([int(row["label"]) for row in cases], minlength=n_classes)
+    if np.any(counts == 0):
+        raise ValueError(f"At least one class missing from training patients: {counts.tolist()}")
+    weights = np.minimum(cap, np.sqrt(counts.max() / counts.astype(float)))
+    weights /= weights.mean()
+    return torch.as_tensor(weights, dtype=torch.float32, device=device)
+
+
+def evaluate_model(model, loader, device, n_classes, return_predictions=False, label_map=None):
     model.eval()
     ys, probs, records = [], [], []
     with torch.no_grad():
@@ -62,6 +87,13 @@ def evaluate_model(model, loader, device, n_classes, return_predictions=False):
                     "ap_slice_ids": record["ap_slice_ids"], "pvp_slice_ids": record["pvp_slice_ids"],
                 })
     metrics = compute_metrics(np.asarray(ys), np.asarray(probs), n_classes)
+    if label_map is not None:
+        aggregate = summarize_three_class(np.asarray(ys), np.asarray(probs), label_map)
+        if aggregate is not None:
+            three_metrics, three_probs = aggregate
+            metrics["three_class"] = three_metrics
+            for record, three_pr in zip(records, three_probs):
+                record["three_class_probabilities"] = three_pr.tolist()
     return (metrics, records) if return_predictions else metrics
 
 
@@ -95,6 +127,11 @@ def fit(args):
         raise ValueError("The selection MIL must be trained on real AP/PVP only")
     mode = "mixed" if args.stage == "selection" else "selected"
     train_set, train_loader = make_loader(args, "train", args.group, mode, shuffle=True)
+    class_weight_mode = getattr(args, "class_weight", "sqrt")
+    if class_weight_mode not in {"sqrt", "none"}:
+        raise ValueError("class_weight must be sqrt or none")
+    weights = (sqrt_class_weights(train_set.cases, n_classes, args.device)
+               if class_weight_mode == "sqrt" else None)
     validation_group = "ncct" if args.group == "ncct" else "cect_real"
     _, val_loader = make_loader(args, "val", validation_group, mode)
     phase_mode = "ncct" if args.group == "ncct" else "dual"
@@ -120,7 +157,7 @@ def fit(args):
                 outputs = model(batch["ap"].to(args.device), batch["pvp"].to(args.device),
                                 batch["valid_mask"].to(args.device))
                 labels_batch = batch["label"].to(args.device)
-                loss = F.cross_entropy(outputs["logits"], labels_batch)
+                loss = F.cross_entropy(outputs["logits"], labels_batch, weight=weights)
                 loss.backward()
                 optimizer.step()
                 total_loss += float(loss.item()) * len(labels_batch)
@@ -131,7 +168,7 @@ def fit(args):
                                           "selected_ap_ids": rec["ap_slice_ids"],
                                           "selected_pvp_ids": rec["pvp_slice_ids"],
                                           "sampling": rec["sampling"]}, ensure_ascii=False) + "\n")
-        val_metrics = evaluate_model(model, val_loader, args.device, n_classes)
+        val_metrics = evaluate_model(model, val_loader, args.device, n_classes, label_map=labels)
         score = val_metrics["macro_auc"]
         if score is None or not math.isfinite(score):
             score = val_metrics["macro_f1"]
@@ -146,7 +183,9 @@ def fit(args):
                 "freeze_encoder": args.freeze_encoder, "encode_chunk": args.encode_chunk,
                 "imagenet_norm": args.pretrained,
                 "stage": args.stage, "group": args.group, "epoch": epoch,
-                "label_map": labels, "manifest_sha256": source_sha,
+                "label_map": labels, "class_weight_mode": class_weight_mode,
+                "class_weights": weights.cpu().tolist() if weights is not None else None,
+                "manifest_sha256": source_sha,
                 "image_size": args.image_size,
             }
             torch.save(ckpt, out / "best.pt")
@@ -173,7 +212,8 @@ def evaluate_checkpoint(args):
     mode = "selected" if state["stage"] == "selected" else "mixed"
     _, loader = make_loader(args, args.split, group, mode)
     metrics, predictions = evaluate_model(model, loader, args.device,
-                                           state["num_classes"], return_predictions=True)
+                                           state["num_classes"], return_predictions=True,
+                                           label_map=state.get("label_map"))
     write_json(args.out, {"checkpoint": str(args.checkpoint), "split": args.split,
                           "evaluation_group": group, "metrics": metrics,
                           "predictions": predictions})

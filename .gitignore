@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+.venv/
+runs/
+data/
+*.nii
+*.nii.gz
+*.pt
+*.pth

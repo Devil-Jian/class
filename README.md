@@ -202,6 +202,8 @@ cectcls train-grid \
   --device cuda --out "$WORK/experiments"
 ```
 
+**Class imbalance and evaluation:** default `--class-weight sqrt` computes square-root inverse-frequency CE weights **only from training patients**, caps them at 3 before normalization, and keeps the original 1,298 patients. Use `--class-weight none` for unweighted CE comparison. Five-disease Macro-AUC/Macro-F1 remain the primary endpoints. Normal/benign/malignant probabilities are derived by **summing the five-disease probabilities** in `three_class` metrics and `three_class_probabilities` patient records; no separate three-class model is trained.
+
 Data groups:
 - `ncct` — NCCT, trained and tested on NCCT.
 - `cect_real` — REAL AP+PVP; trained/tested on Real CECT.

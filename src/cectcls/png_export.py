@@ -44,7 +44,7 @@ def export_png(manifest, selection, out, syn_index=None, window=(-160.0, 240.0))
                 ("real", "pvp", case["volumes"]["pvp"], pvp),
                 ("ncct", "ncct", case["volumes"]["ncct"], ncct),
             ]
-            if synthetic is not None:
+            if synthetic is not None and patient.get("split") == "train":
                 for phase in ("ap", "pvp"):
                     key = f"{pid}|{ref}|{phase}"
                     if key not in synthetic:

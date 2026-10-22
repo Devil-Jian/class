@@ -125,7 +125,9 @@ def audit_images(cases_csv, out, strict_mask=False, workers=2):
     if cache_file.is_file():
         try:
             previous = json.loads(cache_file.read_text(encoding="utf-8"))
-            if previous.get("schema") == 1 and previous.get("cases_csv_sha256") == checksum:
+            if previous.get("schema") == 1:
+                # Reuse header reads even after a verified patient-subset change.
+                # _inspect_one revalidates each path, size and mtime before reuse.
                 prior = previous.get("patients", {})
         except (ValueError, OSError):
             prior = {}

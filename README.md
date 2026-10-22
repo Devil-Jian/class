@@ -17,67 +17,54 @@ Expected directory on the GPU server:
 
 Metadata CSV: `GX_metadata_all.csv`. The cohort scanner uses `patient_id`, `分类（暂定）` (`是`), `三分类标签` (default) or `主类别`, and `配准等级` (default GOLD/SILVER/REJECT for classification; REJECT requires extra cross-phase matching QC). Duplicate patients with conflicting classification labels are excluded. **REJECT is eligible for REAL CECT classification** because it marks poor NCCT/CECT registration; **waiting/unregistered records remain excluded** unless separately verified. REJECT patients need extra AP/PVP pairing QC and NCCT slice matching review before synthesis. A valid image file and mask must exist unless you explicitly use `--allow-missing-mask`. Actual NIfTI **shape AND affine grid** are strictly checked at `prepare`. 512x512 in-plane size alone does not prove grid alignment.
 
-## Quick start: fixed local code and output, configurable scan input
+## Active classification cohort: 1,195 patients (2026-10-22)
 
-This project's **final paths**:
+The user explicitly confirmed **103 patient directories are absent** from the source
+CT mount. The former 1,298-case cohort remains an audit snapshot; the active
+five-disease classification cohort is now **1,195 patients**. No additional
+patients are silently dropped. The original patient-level splits are only
+filtered, not regenerated:
 
-| Role | Path |
-|---|---|
-| Code + small locked cohort/split files | `/workspace/class` |
-| Source CTs / scans | `/win_cect/shared/gx_all_registered` |
-| All generated outputs | `/dataset/downstream_classification` |
+| Split | Active patients |
+|---|---:|
+| train | 844 |
+| val | 180 |
+| test | 171 |
 
-Place the two approved CSV files in the repo's **git-ignored** local input folder:
+The five-disease distribution is HCC=720, metastases=87, cyst=163,
+hemangioma=52, normal=173. The new cohort's exact patient ID/label hash is
+validated by `lock-cohort` as well as the count and distribution.
+
+Download and place these **local-only** input files from the conversation:
 
 ```text
 /workspace/class/input/
-  classification_main5_1298_including_REJECT.csv
-  classification_main5_1298_locked_splits.csv
+    classification_main5_1195_including_REJECT.csv
+    classification_main5_1195_locked_splits.csv
 ```
+
+The old 1298 files can remain in the same ignored `input/` directory for
+provenance. The 103 excluded patient IDs are recorded separately in
+`classification_excluded_missing_103_audit.csv`, not committed to GitHub.
 
 ```bash
-mkdir -p /workspace
-git clone https://github.com/Devil-Jian/class.git /workspace/class
 cd /workspace/class
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-mkdir -p input /dataset/downstream_classification
-
-# Only CT source changes if scan storage is moved in the future:
+python -m pip install -e ".[dev]"
+python -m pytest -q
 export INPUT_ROOT=/win_cect/shared/gx_all_registered
-export DEVICE=cuda
-
-pytest -q
-bash scripts/run_classification.sh prepare
-bash scripts/run_classification.sh train-selector
-bash scripts/run_classification.sh top16
-bash scripts/run_classification.sh match
-# Inspect matching quality on REJECT before requesting synthesis.
-bash scripts/run_classification.sh request-syn
-# Run the external NCCT->CECT generator with the JSON requests written under /dataset.
-bash scripts/run_classification.sh register-syn
-bash scripts/run_classification.sh export-png
-bash scripts/run_classification.sh smoke
-bash scripts/run_classification.sh train-grid
-bash scripts/run_classification.sh evaluate
+export QC_WORKERS=2
+time bash scripts/run_classification.sh qc
 ```
 
-`lock-cohort --image-root` rewrites the absolute input NIfTI paths under
-`$INPUT_ROOT/<patient_id>` without changing patient membership, labels or
-frozen train/val/test splits. The approved 1,298 case CSV is verified by a
-fixed patient-and-label checksum. The **cohort and test split are not rebuilt**
-from the larger GX metadata.
+**Expected next QC outcome, based on the previous full scan**: up to 1183/1195
+passes and **12 remaining incomplete patients**. Those 12 cases are **not**
+approved for removal, so `qc` still stops; investigate them before
+`prepare`. This is not a failed data migration.
 
-`prepare` audits NIfTI headers on all 1,298 patients; it stops rather than
-dropping patients when some source scans or masks are missing/incompatible.
-`REJECT` remains eligible for Real AP/PVP classification but should receive
-extra phase pairing and NCCT-to-CECT matching QC. A matching score is **not**
-an anatomical guarantee. Do not start synthesis until mismatches are reviewed.
+All generated outputs remain under `/dataset/downstream_classification`.
+The `/workspace/class` directory contains code and only lightweight local
+files; `/win_cect/shared/gx_all_registered` is the read-only image input root.
 
-`request-syn` produces only a JSON request manifest. The external NCCT->CECT
-generator must produce each 2D HU `.npy` file before running `register-syn`.
-PNG outputs use a fixed [-160,240] HU window and are exported **after** selection.
 
 ## HDD-optimized QC (64 GB RAM)
 
@@ -132,7 +119,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-## 3. Full training sequence (use Step 0 for this study)
+## 3. Historical 1,298-patient workflow (superseded by 1,195 active cohort above)
 
 Copy the uploaded CSV onto the training server first, e.g. to `/dataset/dataset/GX_metadata_all.csv`. Customize `CSV` below to the actual location.
 

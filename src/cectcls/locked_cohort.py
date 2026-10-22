@@ -20,6 +20,7 @@ THREE_WAY = {
     "HCC": "恶性", "转移瘤": "恶性",
 }
 EXPECTED_DISTRIBUTION = {"HCC": 724, "转移瘤": 92, "肝囊肿": 188, "血管瘤": 56, "正常": 238}
+LOCKED_ID_LABEL_SHA256 = "815f884a755f3dd8317a2c11c53b58b8e71406288f9125f94129850b3c4e0e17"
 PATH_COLS = ("ncct_path", "ap_path", "pvp_path")
 
 
@@ -102,6 +103,13 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
         grade_count[grade] += 1
     if expected_count == 1298 and dict(count) != EXPECTED_DISTRIBUTION:
         raise ValueError(f"Cohort class counts differ from the approved list: {dict(count)}")
+    canonical_membership = "\\n".join(
+        sorted(f"{row['patient_id'].strip()}|{row['主类别'].strip()}" for row in entries)
+    )
+    membership_sha256 = hashlib.sha256(canonical_membership.encode("utf-8")).hexdigest()
+    if expected_count == 1298 and membership_sha256 != LOCKED_ID_LABEL_SHA256:
+        raise ValueError("The 1298-case patient IDs or primary labels differ from the approved "
+                         f"cohort: sha256={membership_sha256} (expected {LOCKED_ID_LABEL_SHA256})")
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     _write_csv(out / "cases.csv",
@@ -126,6 +134,7 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
         "patients": len(entries), "by_primary_label": dict(count),
         "by_registration_grade": dict(grade_count),
         "source_csv_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "patient_label_membership_sha256": membership_sha256,
         "labels": LABEL_TO_ID,
         "splits_created": bool(generate_splits),
         "by_split": dict(Counter(splits.values())),

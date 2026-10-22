@@ -14,6 +14,7 @@ SELECTION_EPOCHS="${SELECTION_EPOCHS:-30}"
 EXPERIMENT_EPOCHS="${EXPERIMENT_EPOCHS:-30}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 WORKERS="${WORKERS:-0}"
+QC_WORKERS="${QC_WORKERS:-2}"
 mkdir -p "$WORK" "$INPUT_DIR"
 
 PRETRAINED=()
@@ -34,7 +35,7 @@ COMMON=(
 )
 
 case "$STAGE" in
-  prepare)
+  qc|prepare)
     [[ -d "$INPUT_ROOT" ]] || { echo "Missing INPUT_ROOT directory: $INPUT_ROOT" >&2; exit 2; }
     [[ -f "$LOCKED_CSV" ]] || { echo "Missing approved patient CSV: $LOCKED_CSV" >&2; exit 2; }
     [[ -f "$FROZEN_SPLITS_CSV" ]] || { echo "Missing frozen patient splits: $FROZEN_SPLITS_CSV" >&2; exit 2; }
@@ -46,6 +47,7 @@ case "$STAGE" in
     cectcls audit-images \
       --cases "$WORK/cohort/cases.csv" \
       --strict-mask \
+      --workers "$QC_WORKERS" \
       --out "$WORK/cohort/image_audit.csv"
     python - "$WORK/cohort/image_audit.json" <<'PY'
 import json, sys
@@ -55,10 +57,15 @@ print(f"Image audit: {a['ready']}/{a['locked_patients_checked']} ready")
 if a['ready'] != a['locked_patients_checked']:
     raise SystemExit("STOP: some of the locked 1298 scans/masks require repair; nothing was deleted.")
 PY
+    if [[ "$STAGE" == "qc" ]]; then
+      echo "Quick header QC passed. Run 'bash scripts/run_classification.sh prepare' to build cached slice manifests."
+      exit 0
+    fi
     cectcls prepare \
       --cases "$WORK/cohort/cases.csv" \
       --splits "$WORK/cohort/splits.csv" \
       --label-map "$WORK/cohort/labels.json" \
+      --header-cache "$WORK/cohort/image_header_cache.json" \
       --out "$WORK/manifests"
     ;;
   train-selector)
@@ -136,7 +143,7 @@ PY
     cat <<HELP
 Usage: cd /workspace/class && bash scripts/run_classification.sh STAGE
 
-STAGEs: prepare, train-selector, top16, match, request-syn,
+STAGEs: qc, prepare, train-selector, top16, match, request-syn,
         register-syn, export-png, smoke, train-grid, evaluate
 
 PROJECT_ROOT (code/light files): $PROJECT_ROOT
@@ -146,7 +153,7 @@ LOCKED_CSV:                    $LOCKED_CSV
 FROZEN_SPLITS_CSV:             $FROZEN_SPLITS_CSV
 
 Variables: DEVICE=cuda, SELECTION_EPOCHS=30, EXPERIMENT_EPOCHS=30,
-           BATCH_SIZE=2, WORKERS=0, USE_PRETRAINED=1, FREEZE_ENCODER=1
+           BATCH_SIZE=2, WORKERS=0, QC_WORKERS=2, USE_PRETRAINED=1, FREEZE_ENCODER=1
 
 Stages deliberately do not skip a failed image/registration/synthesis audit.
 No patients are auto-removed from the fixed 1298-patient cohort.

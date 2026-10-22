@@ -7,7 +7,7 @@ Classification pipeline for registered liver CT. **No tumor-mask/lesion-detector
 Expected directory on the GPU server:
 
 ```text
-/dataset/dataset/gx_all_registered/
+/win_cect/shared/gx_all_registered/
   A0_1/
     ncct_zcrop.nii.gz           # fixed NCCT, HU
     ap_registered.nii.gz        # registered AP, HU
@@ -17,29 +17,45 @@ Expected directory on the GPU server:
 
 Metadata CSV: `GX_metadata_all.csv`. The cohort scanner uses `patient_id`, `分类（暂定）` (`是`), `三分类标签` (default) or `主类别`, and `配准等级` (default GOLD/SILVER/REJECT for classification; REJECT requires extra cross-phase matching QC). Duplicate patients with conflicting classification labels are excluded. **REJECT is eligible for REAL CECT classification** because it marks poor NCCT/CECT registration; **waiting/unregistered records remain excluded** unless separately verified. REJECT patients need extra AP/PVP pairing QC and NCCT slice matching review before synthesis. A valid image file and mask must exist unless you explicitly use `--allow-missing-mask`. Actual NIfTI **shape AND affine grid** are strictly checked at `prepare`. 512x512 in-plane size alone does not prove grid alignment.
 
-## Quick start: change only the source CT root (approved 1,298)
+## Quick start: fixed local code and output, configurable scan input
 
-The **output path is always** `/dataset/downstream_classification`. Download the two fixed input files from the conversation and upload them to:
+This project's **final paths**:
+
+| Role | Path |
+|---|---|
+| Code + small locked cohort/split files | `/workspace/class` |
+| Source CTs / scans | `/win_cect/shared/gx_all_registered` |
+| All generated outputs | `/dataset/downstream_classification` |
+
+Place the two approved CSV files in the repo's **git-ignored** local input folder:
 
 ```text
-/dataset/downstream_classification/input/
+/workspace/class/input/
   classification_main5_1298_including_REJECT.csv
   classification_main5_1298_locked_splits.csv
 ```
 
 ```bash
-# Choose ONE root; neither choice changes where any output is written.
-export INPUT_ROOT=/dataset/dataset/gx_all_registered
-# export INPUT_ROOT=/win_cect/shared/gx_all_registered
+mkdir -p /workspace
+git clone https://github.com/Devil-Jian/class.git /workspace/class
+cd /workspace/class
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+mkdir -p input /dataset/downstream_classification
 
+# Only CT source changes if scan storage is moved in the future:
+export INPUT_ROOT=/win_cect/shared/gx_all_registered
+export DEVICE=cuda
+
+pytest -q
 bash scripts/run_classification.sh prepare
 bash scripts/run_classification.sh train-selector
 bash scripts/run_classification.sh top16
 bash scripts/run_classification.sh match
-# Inspect NCCT matching QC, especially REJECT patients.
+# Inspect matching quality on REJECT before requesting synthesis.
 bash scripts/run_classification.sh request-syn
-# Run the *separate* NCCT-to-CECT synthesis model with
-# /dataset/downstream_classification/manifests/synthetic_requests.json.
+# Run the external NCCT->CECT generator with the JSON requests written under /dataset.
 bash scripts/run_classification.sh register-syn
 bash scripts/run_classification.sh export-png
 bash scripts/run_classification.sh smoke
@@ -47,20 +63,21 @@ bash scripts/run_classification.sh train-grid
 bash scripts/run_classification.sh evaluate
 ```
 
-`lock-cohort --image-root` replaces all source NIfTI paths with
-`$INPUT_ROOT/<patient_id>/{ncct_zcrop,ap_registered,pvp_registered,ncct_mask_zcrop}.nii.gz`;
-the exact approved 1,298 patient IDs, labels, and frozen split CSV are unchanged.
-`prepare` performs a non-destructive, full-cohort image-header audit and
-**stops** if any locked scan or mask is missing/incompatible. Nothing is silently
-dropped. Switching storage roots after training has started requires verifying
-the scan contents are identical and regenerating path-dependent manifests.
+`lock-cohort --image-root` rewrites the absolute input NIfTI paths under
+`$INPUT_ROOT/<patient_id>` without changing patient membership, labels or
+frozen train/val/test splits. The approved 1,298 case CSV is verified by a
+fixed patient-and-label checksum. The **cohort and test split are not rebuilt**
+from the larger GX metadata.
 
-**External synthesis boundary:** `register-syn` requires the external generator
-to have written all training Syn-AP and Syn-PVP HU-valued `.npy` outputs.
-A `review_required` matching status is not automatically treated as a valid
-anatomical correspondence. Review and repair poor registration before generating
-those images; retaining a patient for Real-CECT classification does not certify
-its eligibility for paired NCCT synthesis.
+`prepare` audits NIfTI headers on all 1,298 patients; it stops rather than
+dropping patients when some source scans or masks are missing/incompatible.
+`REJECT` remains eligible for Real AP/PVP classification but should receive
+extra phase pairing and NCCT-to-CECT matching QC. A matching score is **not**
+an anatomical guarantee. Do not start synthesis until mismatches are reviewed.
+
+`request-syn` produces only a JSON request manifest. The external NCCT->CECT
+generator must produce each 2D HU `.npy` file before running `register-syn`.
+PNG outputs use a fixed [-160,240] HU window and are exported **after** selection.
 
 ## 2. Install
 

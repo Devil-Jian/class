@@ -46,7 +46,7 @@ cectcls prepare-cohort \
   --metadata "$CSV" \
   --image-root "$ROOT" \
   --label-column 三分类标签 \
-  --grades GOLD SILVER \
+  --grades GOLD SILVER REJECT \
   --out "$WORK/cohort"
 
 cat "$WORK/cohort/cohort_report.json"

@@ -98,8 +98,12 @@ class PatientBagDataset(Dataset):
                 a_path, a_id = case["volumes"]["ncct"], ncid
                 p_path, p_id = a_path, a_id
             elif use_syn:
-                a_path, a_id = self._syn_path(self.syn_index, case["patient_id"], ref, "ap"), None
-                p_path, p_id = self._syn_path(self.syn_index, case["patient_id"], ref, "pvp"), None
+                if self.png_index:
+                    # PNG index supplies final Syn images, so no HU syn_index is needed.
+                    a_path, a_id, p_path, p_id = None, None, None, None
+                else:
+                    a_path, a_id = self._syn_path(self.syn_index, case["patient_id"], ref, "ap"), None
+                    p_path, p_id = self._syn_path(self.syn_index, case["patient_id"], ref, "pvp"), None
             else:
                 a_path, a_id = case["volumes"]["ap"], apid
                 p_path, p_id = case["volumes"]["pvp"], pvpid

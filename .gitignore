@@ -9,3 +9,6 @@ data/
 *.nii.gz
 *.pt
 *.pth
+
+# Local cohort manifests and patient IDs are not source code
+input/

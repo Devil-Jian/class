@@ -103,7 +103,7 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
         grade_count[grade] += 1
     if expected_count == 1298 and dict(count) != EXPECTED_DISTRIBUTION:
         raise ValueError(f"Cohort class counts differ from the approved list: {dict(count)}")
-    canonical_membership = "\\n".join(
+    canonical_membership = "\n".join(
         sorted(f"{row['patient_id'].strip()}|{row['主类别'].strip()}" for row in entries)
     )
     membership_sha256 = hashlib.sha256(canonical_membership.encode("utf-8")).hexdigest()

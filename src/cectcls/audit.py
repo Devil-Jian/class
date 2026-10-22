@@ -38,7 +38,7 @@ def _header(path):
     if not np.all(np.isfinite(orient)):
         raise ValueError("bad_orientation")
     transform = nib.orientations.ornt_transform(orient, ras)
-    shape = [int(image.shape[int(axis)]) for axis in transform[:, 0]]
+    shape = [int(image.shape[int(axis)]) for axis in np.argsort(transform[:, 0])]
     affine = image.affine @ nib.orientations.inv_ornt_aff(transform, image.shape)
     if not np.isfinite(affine).all():
         raise ValueError("bad_affine")
@@ -85,7 +85,8 @@ def _inspect_one(case, strict_mask):
         "_missing", "_grid_mismatch", "_not_3d", "_unreadable", "_bad_orientation",
         "_bad_affine",
     )
-    ready = not any(any(s in x for s in critical) for x in notes)
+    ready = not any(any(s in x for s in critical) for x in notes
+                    if strict_mask or x != "mask_path_missing")
     record = {
         "patient_id": pid, "label": case["label"],
         "nifti_ready": ready, "issues": ";".join(notes),

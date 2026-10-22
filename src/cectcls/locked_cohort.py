@@ -22,6 +22,12 @@ THREE_WAY = {
 EXPECTED_DISTRIBUTION = {"HCC": 724, "转移瘤": 92, "肝囊肿": 188, "血管瘤": 56, "正常": 238}
 LOCKED_ID_LABEL_SHA256 = "815f884a755f3dd8317a2c11c53b58b8e71406288f9125f94129850b3c4e0e17"
 PATH_COLS = ("ncct_path", "ap_path", "pvp_path")
+SCAN_FILENAMES = {
+    "ncct_path": "ncct_zcrop.nii.gz",
+    "ap_path": "ap_registered.nii.gz",
+    "pvp_path": "pvp_registered.nii.gz",
+    "liver_mask_path": "ncct_mask_zcrop.nii.gz",
+}
 
 
 def _write_csv(path, fields, rows):
@@ -53,7 +59,15 @@ def _stratified_split(rows, seed, train_ratio=0.70, val_ratio=0.15):
     return splits
 
 
-def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True):
+def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True,
+                image_root=None, splits_source=None):
+    """Preserve membership but rebuild image paths under image_root when supplied.
+
+    splits_source copies and validates a previously frozen patient split exactly.
+    """
+    if splits_source is not None and not generate_splits:
+        raise ValueError("--splits-source cannot be used with --without-splits")
+    image_root = Path(image_root).expanduser().resolve() if image_root else None
     path = Path(source).resolve()
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -81,13 +95,20 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
             raise ValueError(f"Unexpected main disease for patient {pid}: {label!r}")
         if THREE_WAY[label] != three_way:
             raise ValueError(f"Inconsistent main / 3-class label: patient {pid} {label} {three_way}")
-        paths = {name: row[name].strip() for name in PATH_COLS}
+        if image_root is not None:
+            if "/" in pid or "\\" in pid or pid in {".", ".."}:
+                raise ValueError(f"Invalid patient directory name: {pid!r}")
+            paths = {name: str(image_root / pid / filename)
+                     for name, filename in SCAN_FILENAMES.items() if name in PATH_COLS}
+        else:
+            paths = {name: row[name].strip() for name in PATH_COLS}
         if not all(paths.values()):
             raise ValueError(f"Missing image path in locked cohort for {pid}")
         grade = row["配准等级"].strip().upper()
         if grade not in {"GOLD", "SILVER", "REJECT"}:
             raise ValueError(f"Unexpected registration grade {grade} for {pid}")
-        mask = (row.get("liver_mask_path_candidate") or row.get("liver_mask_path") or "").strip()
+        mask = (str(image_root / pid / SCAN_FILENAMES["liver_mask_path"]) if image_root is not None
+                else (row.get("liver_mask_path_candidate") or row.get("liver_mask_path") or "").strip())
         cases.append({
             "patient_id": pid, "label": label, **paths,
             "liver_mask_path": mask,
@@ -122,7 +143,19 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
         "primary_to_three": THREE_WAY,
         "three_to_id": {"正常": 0, "良性": 1, "恶性": 2},
     })
-    splits = _stratified_split(entries, seed) if generate_splits else {}
+    splits = _stratified_split(entries, seed) if generate_splits and splits_source is None else {}
+    if splits_source is not None:
+        with Path(splits_source).open("r", encoding="utf-8-sig", newline="") as f:
+            original_splits = list(csv.DictReader(f))
+        if len(original_splits) != len(entries):
+            raise ValueError("Frozen splits must have exactly the approved patient count")
+        for row in original_splits:
+            pid, split = row["patient_id"].strip(), row["split"].strip().lower()
+            if pid in splits or split not in {"train", "val", "test"}:
+                raise ValueError(f"Duplicate/invalid patient split: {row}")
+            splits[pid] = split
+        if set(splits) != seen:
+            raise ValueError("Frozen splits membership differs from locked patients")
     if generate_splits:
         _write_csv(out / "splits.csv", ["patient_id", "split"], [
             {"patient_id": row["patient_id"], "split": splits[row["patient_id"]]}
@@ -134,6 +167,8 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True)
         "patients": len(entries), "by_primary_label": dict(count),
         "by_registration_grade": dict(grade_count),
         "source_csv_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "image_root_override": str(image_root) if image_root else None,
+        "splits_source": str(Path(splits_source).resolve()) if splits_source else None,
         "patient_label_membership_sha256": membership_sha256,
         "labels": LABEL_TO_ID,
         "splits_created": bool(generate_splits),

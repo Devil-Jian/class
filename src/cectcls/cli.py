@@ -50,6 +50,8 @@ def make_parser():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("lock-cohort")
     p.add_argument("--source", required=True)
+    p.add_argument("--image-root", help="Override only the parent directory of the 1298 patient scans")
+    p.add_argument("--splits-source", help="Previously fixed splits.csv, preserved verbatim by patient ID")
     p.add_argument("--out", required=True)
     p.add_argument("--expected-count", type=int, default=1298)
     p.add_argument("--seed", type=int, default=42)
@@ -122,7 +124,8 @@ def main(argv=None):
     args = make_parser().parse_args(argv)
     if args.command == "lock-cohort":
         print(lock_cohort(args.source, args.out, expected_count=args.expected_count,
-                          seed=args.seed, generate_splits=not args.without_splits))
+                          seed=args.seed, generate_splits=not args.without_splits,
+                          image_root=args.image_root, splits_source=args.splits_source))
     elif args.command == "prepare-cohort":
         print(build_cohort(args.metadata, args.image_root, args.out,
                            label_column=args.label_column, grades=args.grades,

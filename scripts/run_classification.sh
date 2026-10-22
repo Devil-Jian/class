@@ -7,8 +7,9 @@ INPUT_ROOT="${INPUT_ROOT:-/win_cect/shared/gx_all_registered}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="/dataset/downstream_classification"
 INPUT_DIR="$PROJECT_ROOT/input"
-LOCKED_CSV="${LOCKED_CSV:-$INPUT_DIR/classification_main5_1298_including_REJECT.csv}"
-FROZEN_SPLITS_CSV="${FROZEN_SPLITS_CSV:-$INPUT_DIR/classification_main5_1298_locked_splits.csv}"
+LOCKED_CSV="${LOCKED_CSV:-$INPUT_DIR/classification_main5_1195_including_REJECT.csv}"
+FROZEN_SPLITS_CSV="${FROZEN_SPLITS_CSV:-$INPUT_DIR/classification_main5_1195_locked_splits.csv}"
+EXPECTED_COUNT="${EXPECTED_COUNT:-1195}"
 DEVICE="${DEVICE:-cuda}"
 SELECTION_EPOCHS="${SELECTION_EPOCHS:-30}"
 EXPERIMENT_EPOCHS="${EXPERIMENT_EPOCHS:-30}"
@@ -41,6 +42,7 @@ case "$STAGE" in
     [[ -f "$FROZEN_SPLITS_CSV" ]] || { echo "Missing frozen patient splits: $FROZEN_SPLITS_CSV" >&2; exit 2; }
     cectcls lock-cohort \
       --source "$LOCKED_CSV" \
+      --expected-count "$EXPECTED_COUNT" \
       --splits-source "$FROZEN_SPLITS_CSV" \
       --image-root "$INPUT_ROOT" \
       --out "$WORK/cohort"
@@ -55,7 +57,7 @@ from pathlib import Path
 a=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
 print(f"Image audit: {a['ready']}/{a['locked_patients_checked']} ready")
 if a['ready'] != a['locked_patients_checked']:
-    raise SystemExit("STOP: some of the locked 1298 scans/masks require repair; nothing was deleted.")
+    raise SystemExit("STOP: some of the active cohort scans/masks require repair; no additional patients were deleted.")
 PY
     if [[ "$STAGE" == "qc" ]]; then
       echo "Quick header QC passed. Run 'bash scripts/run_classification.sh prepare' to build cached slice manifests."
@@ -151,12 +153,14 @@ INPUT_ROOT (only scan location): $INPUT_ROOT
 WORK (always fixed):           $WORK
 LOCKED_CSV:                    $LOCKED_CSV
 FROZEN_SPLITS_CSV:             $FROZEN_SPLITS_CSV
+EXPECTED_COUNT:                 $EXPECTED_COUNT
 
 Variables: DEVICE=cuda, SELECTION_EPOCHS=30, EXPERIMENT_EPOCHS=30,
            BATCH_SIZE=2, WORKERS=0, QC_WORKERS=2, USE_PRETRAINED=1, FREEZE_ENCODER=1
 
 Stages deliberately do not skip a failed image/registration/synthesis audit.
-No patients are auto-removed from the fixed 1298-patient cohort.
+Exactly 103 user-approved missing-directory patients are absent from active 1195;
+no further patients are auto-removed.
 HELP
     ;;
 esac

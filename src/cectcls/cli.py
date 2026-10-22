@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from .manifest import prepare
+from .audit import audit_images
 from .cohort import build_cohort
 from .locked_cohort import lock_cohort
 from .png_export import export_png
@@ -67,6 +68,11 @@ def make_parser():
     p.add_argument("--val-ratio", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--allow-missing-mask", action="store_true")
+
+    p = sub.add_parser("audit-images")
+    p.add_argument("--cases", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--strict-mask", action="store_true")
 
     p = sub.add_parser("prepare")
     p.add_argument("--label-map")
@@ -131,6 +137,8 @@ def main(argv=None):
                            label_column=args.label_column, grades=args.grades,
                            train_ratio=args.train_ratio, val_ratio=args.val_ratio,
                            seed=args.seed, require_mask=not args.allow_missing_mask))
+    elif args.command == "audit-images":
+        print(audit_images(args.cases, args.out, strict_mask=args.strict_mask))
     elif args.command == "prepare":
         records = prepare(args.cases, args.splits, args.out, label_map_path=args.label_map)
         print(f"Prepared {len(records)} patients")

@@ -1,7 +1,8 @@
-"""Freeze the user-approved 1298-patient primary disease classification cohort.
+"""Freeze the explicitly approved primary disease classification cohorts.
 
-No automatic dropping of REJECT subjects, small classes, or image-quality flags.
-Missing files / incompatible registration are separate QC findings, not cohort edits.
+The original 1298 are retained as an audit source. Exactly 103 user-identified
+absent-directory patients are excluded from the active 1195-case cohort.
+No additional drops occur for REJECT, rare diagnoses or image quality.
 """
 from __future__ import annotations
 
@@ -19,8 +20,16 @@ THREE_WAY = {
     "正常": "正常", "肝囊肿": "良性", "血管瘤": "良性",
     "HCC": "恶性", "转移瘤": "恶性",
 }
-EXPECTED_DISTRIBUTION = {"HCC": 724, "转移瘤": 92, "肝囊肿": 188, "血管瘤": 56, "正常": 238}
-LOCKED_ID_LABEL_SHA256 = "815f884a755f3dd8317a2c11c53b58b8e71406288f9125f94129850b3c4e0e17"
+APPROVED_COHORTS = {
+    1298: {
+        "counts": {"HCC": 724, "转移瘤": 92, "肝囊肿": 188, "血管瘤": 56, "正常": 238},
+        "patient_label_sha256": "815f884a755f3dd8317a2c11c53b58b8e71406288f9125f94129850b3c4e0e17",
+    },
+    1195: {
+        "counts": {"HCC": 720, "转移瘤": 87, "肝囊肿": 163, "血管瘤": 52, "正常": 173},
+        "patient_label_sha256": "1959ee5f0dac045abce43f2dabaee8b01d1864240d70a0aa45c082003b1f1896",
+    },
+}
 PATH_COLS = ("ncct_path", "ap_path", "pvp_path")
 SCAN_FILENAMES = {
     "ncct_path": "ncct_zcrop.nii.gz",
@@ -122,15 +131,17 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True,
         })
         count[label] += 1
         grade_count[grade] += 1
-    if expected_count == 1298 and dict(count) != EXPECTED_DISTRIBUTION:
-        raise ValueError(f"Cohort class counts differ from the approved list: {dict(count)}")
+    approved = APPROVED_COHORTS.get(expected_count)
+    if approved and dict(count) != approved["counts"]:
+        raise ValueError(f"Cohort class counts differ from the approved {expected_count} list: {dict(count)}")
     canonical_membership = "\n".join(
         sorted(f"{row['patient_id'].strip()}|{row['主类别'].strip()}" for row in entries)
     )
     membership_sha256 = hashlib.sha256(canonical_membership.encode("utf-8")).hexdigest()
-    if expected_count == 1298 and membership_sha256 != LOCKED_ID_LABEL_SHA256:
-        raise ValueError("The 1298-case patient IDs or primary labels differ from the approved "
-                         f"cohort: sha256={membership_sha256} (expected {LOCKED_ID_LABEL_SHA256})")
+    if approved and membership_sha256 != approved["patient_label_sha256"]:
+        raise ValueError(f"The {expected_count}-case patient IDs or primary labels differ "
+                         f"from the approved cohort: sha256={membership_sha256} "
+                         f"(expected {approved['patient_label_sha256']})")
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     _write_csv(out / "cases.csv",
@@ -162,7 +173,7 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True,
             for row in entries
         ])
     report = {
-        "cohort_name": "GX_Main5_1298_LOCKED",
+        "cohort_name": f"GX_Main5_{expected_count}_{'ACTIVE' if expected_count == 1195 else 'LOCKED'}",
         "approved_count": expected_count,
         "patients": len(entries), "by_primary_label": dict(count),
         "by_registration_grade": dict(grade_count),
@@ -175,8 +186,9 @@ def lock_cohort(source, out, expected_count=1298, seed=42, generate_splits=True,
         "by_split": dict(Counter(splits.values())),
         "image_files_checked": False,
         "nifti_grid_checked": False,
-        "note": "Do not delete REJECT or any other locked patient automatically. "
-                "Run separate filesystem, AP/PVP and NCCT matching QC before training/synthesis.",
+        "note": "The 1195 active cohort explicitly excludes 103 absent-directory patients from "
+                "the original 1298. Do not drop any of the remaining patients automatically. "
+                "REJECT remains eligible for real CECT classification; run imaging QC separately.",
     }
     write_json(out / "cohort_lock_report.json", report)
     return report

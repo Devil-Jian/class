@@ -79,6 +79,48 @@ an anatomical guarantee. Do not start synthesis until mismatches are reviewed.
 generator must produce each 2D HU `.npy` file before running `register-syn`.
 PNG outputs use a fixed [-160,240] HU window and are exported **after** selection.
 
+## HDD-optimized QC (64 GB RAM)
+
+Use `qc` for a fast **header-only** pass before creating MIL slice manifests.
+It checks the unchanged 1,298-patient locked cohort, all source file paths,
+3D shapes, and canonical-grid affines **without decompressing CT voxel arrays**.
+It does **not** assess voxel-level image integrity, whether the mask is liver,
+or anatomical registration accuracy. `REJECT` patients are never silently removed.
+
+```bash
+cd /workspace/class
+export INPUT_ROOT=/win_cect/shared/gx_all_registered
+export QC_WORKERS=2  # HDD: test 1 or 2, avoid 8-32 concurrent disk seeks
+
+time bash scripts/run_classification.sh qc
+cat /dataset/downstream_classification/cohort/image_audit.json
+
+# After resolving QC problems (do not delete locked patients):
+time bash scripts/run_classification.sh prepare
+cat /dataset/downstream_classification/manifests/qc.json
+```
+
+The fast QC creates `cohort/image_header_cache.json`. The `prepare` step
+reuses unchanged shape/affine metadata instead of reading 5,192 NIfTI headers
+again. Only actual **mask contents** are decompressed to obtain nonzero
+liver-slice indices; those are cached in `manifests/mask_slice_cache.json`
+and reused on subsequent runs. File path, size, and nanosecond mtime are
+checked before cache reuse. Change detection is metadata-based, not a
+cryptographic proof that voxel content is identical. Re-running `prepare`
+after no source changes should show `masks_decompressed: 0` in
+`manifests/qc.json`.
+
+`QC_WORKERS` controls short metadata reads and defaults to **2** for
+rotating HDD; `WORKERS` controls training DataLoader workers independently.
+Do not set QC threads to 64 merely because 64 GB of RAM is available:
+HDD seek contention can make the scan **slower**. The initial full
+mask-index creation still requires one sequential decompression per patient.
+
+If an image changes while `prepare` is running, it stops with a
+re-audit message rather than using a stale header. Cached index files are
+stored only in `/dataset/downstream_classification`, not in the public repo.
+This optimization does not change the frozen patient or disease label lists.
+
 ## 2. Install
 
 Python >=3.10, PyTorch, CUDA recommended:

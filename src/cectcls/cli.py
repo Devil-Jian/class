@@ -51,7 +51,7 @@ def make_parser():
     p.add_argument("--image-root", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--label-column", choices=["三分类标签", "主类别"], default="三分类标签")
-    p.add_argument("--grades", nargs="+", default=["GOLD", "SILVER"])
+    p.add_argument("--grades", nargs="+", default=["GOLD", "SILVER", "REJECT"])
     p.add_argument("--train-ratio", type=float, default=0.70)
     p.add_argument("--val-ratio", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=42)

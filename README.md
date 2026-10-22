@@ -17,53 +17,59 @@ Expected directory on the GPU server:
 
 Metadata CSV: `GX_metadata_all.csv`. The cohort scanner uses `patient_id`, `分类（暂定）` (`是`), `三分类标签` (default) or `主类别`, and `配准等级` (default GOLD/SILVER/REJECT for classification; REJECT requires extra cross-phase matching QC). Duplicate patients with conflicting classification labels are excluded. **REJECT is eligible for REAL CECT classification** because it marks poor NCCT/CECT registration; **waiting/unregistered records remain excluded** unless separately verified. REJECT patients need extra AP/PVP pairing QC and NCCT slice matching review before synthesis. A valid image file and mask must exist unless you explicitly use `--allow-missing-mask`. Actual NIfTI **shape AND affine grid** are strictly checked at `prepare`. 512x512 in-plane size alone does not prove grid alignment.
 
-## Active classification cohort: 1,195 patients (2026-10-22)
+## Final active cohort: 1,183 patients (103 + 12 explicit exclusions)
 
-The user explicitly confirmed **103 patient directories are absent** from the source
-CT mount. The former 1,298-case cohort remains an audit snapshot; the active
-five-disease classification cohort is now **1,195 patients**. No additional
-patients are silently dropped. The original patient-level splits are only
-filtered, not regenerated:
+The original 1,298-patient list and the intermediate 1,195-patient list
+remain archived locally. The user explicitly excluded another 12 incomplete-image
+patients identified in the earlier QC. **Do not guess the 12 IDs**: the server's
+`/dataset/downstream_classification/cohort/image_audit.csv` is the authoritative
+source for which 12 among the approved 1,195 were missing scans.
 
-| Split | Active patients |
-|---|---:|
-| train | 844 |
-| val | 180 |
-| test | 171 |
-
-The five-disease distribution is HCC=720, metastases=87, cyst=163,
-hemangioma=52, normal=173. The new cohort's exact patient ID/label hash is
-validated by `lock-cohort` as well as the count and distribution.
-
-Download and place these **local-only** input files from the conversation:
-
-```text
-/workspace/class/input/
-    classification_main5_1195_including_REJECT.csv
-    classification_main5_1195_locked_splits.csv
-```
-
-The old 1298 files can remain in the same ignored `input/` directory for
-provenance. The 103 excluded patient IDs are recorded separately in
-`classification_excluded_missing_103_audit.csv`, not committed to GitHub.
+The final 1,183 case CSV and fixed patient split CSV are derived in-place
+from the previously approved 1,195 CSV, its original frozen splits, and the
+QC result. No scan file is deleted and nobody is reassigned across splits.
 
 ```bash
 cd /workspace/class
-python -m pip install -e ".[dev]"
+git pull --ff-only origin main
 python -m pytest -q
 export INPUT_ROOT=/win_cect/shared/gx_all_registered
 export QC_WORKERS=2
+
+# Assumes the earlier 1195 or 1298 image_audit.csv still exists.
+# If it does not, run 'bash scripts/run_classification.sh qc' on the 1195 cohort first.
+bash scripts/run_classification.sh prune-qc
+
+# Auto-selects final 1183 and the approved exclusion report.
 time bash scripts/run_classification.sh qc
+time bash scripts/run_classification.sh prepare
+
+cat /dataset/downstream_classification/cohort/image_audit.json
+cat /dataset/downstream_classification/manifests/qc.json
 ```
 
-**Expected next QC outcome, based on the previous full scan**: up to 1183/1195
-passes and **12 remaining incomplete patients**. Those 12 cases are **not**
-approved for removal, so `qc` still stops; investigate them before
-`prepare`. This is not a failed data migration.
+Local-only input files created by `prune-qc`:
 
-All generated outputs remain under `/dataset/downstream_classification`.
-The `/workspace/class` directory contains code and only lightweight local
-files; `/win_cect/shared/gx_all_registered` is the read-only image input root.
+```text
+/workspace/class/input/
+    classification_main5_1183_including_REJECT.csv
+    classification_main5_1183_locked_splits.csv
+    classification_main5_1183_lock_report.json
+    classification_excluded_missing_12_audit.csv
+```
+
+If the first `prune-qc` reports the source/QC patient list is inconsistent,
+stop and inspect the reports; never silently delete more patients. A previous
+1298-case audit is supported **only** when the archived, approved 1298-case CSV
+is also available to verify the already-excluded 103 patient IDs.
+
+Later pipeline stages (`train-selector`, `top16`, `match`, `request-syn`,
+`register-syn`, `export-png`, `smoke`, `train-grid`, `evaluate`) are
+unchanged. Input scans remain under `/win_cect/shared/gx_all_registered`;
+all generated artifacts remain in `/dataset/downstream_classification`.
+`REJECT` patients are not excluded unless among the user-confirmed
+missing-image cases. The 1183 membership SHA-256 and frozen split CSV hash are
+checked against the report created by `prune-qc`.
 
 
 ## HDD-optimized QC (64 GB RAM)

@@ -3,9 +3,10 @@
 set -euo pipefail
 
 STAGE="${1:-help}"
-INPUT_ROOT="${INPUT_ROOT:-/dataset/dataset/gx_all_registered}"
+INPUT_ROOT="${INPUT_ROOT:-/win_cect/shared/gx_all_registered}"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="/dataset/downstream_classification"
-INPUT_DIR="$WORK/input"
+INPUT_DIR="$PROJECT_ROOT/input"
 LOCKED_CSV="${LOCKED_CSV:-$INPUT_DIR/classification_main5_1298_including_REJECT.csv}"
 FROZEN_SPLITS_CSV="${FROZEN_SPLITS_CSV:-$INPUT_DIR/classification_main5_1298_locked_splits.csv}"
 DEVICE="${DEVICE:-cuda}"
@@ -133,11 +134,12 @@ PY
     ;;
   help|*)
     cat <<HELP
-Usage: INPUT_ROOT=/win_cect/shared/gx_all_registered bash scripts/run_classification.sh STAGE
+Usage: cd /workspace/class && bash scripts/run_classification.sh STAGE
 
 STAGEs: prepare, train-selector, top16, match, request-syn,
         register-syn, export-png, smoke, train-grid, evaluate
 
+PROJECT_ROOT (code/light files): $PROJECT_ROOT
 INPUT_ROOT (only scan location): $INPUT_ROOT
 WORK (always fixed):           $WORK
 LOCKED_CSV:                    $LOCKED_CSV

@@ -46,11 +46,15 @@ def test_metadata_to_png_pipeline(tmp_path):
     metadata = tmp_path / "GX_metadata_all.csv"
     _csv(metadata, list(rows[0]), rows)
     report = build_cohort(metadata, root, tmp_path / "cohort")
-    assert report["eligible_patient_count"] == 3
-    assert report["exclusion_counts"]["registration_grade"] == 1
+    # REJECT reflects poor registration quality, not classification ineligibility.
+    assert report["eligible_patient_count"] == 4
+    assert report["by_label"] == {"恶性": 2, "正常": 1, "良性": 1}
+    assert report["exclusion_counts"].get("registration_grade", 0) == 0
+    assert report["exclusion_counts"]["duplicate_metadata_rows_collapsed"] == 1
     cases = prepare(tmp_path / "cohort/cases.csv", tmp_path / "cohort/splits.csv",
                     tmp_path / "manifests")
-    assert len(cases) == 3
+    assert len(cases) == 4
+    assert "A0_4" in {case["patient_id"] for case in cases}
     # Independently fix a tiny matched selection; no model is needed in this test.
     selected = [{
         "patient_id": case["patient_id"], "split": case["split"],

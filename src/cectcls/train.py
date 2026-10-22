@@ -70,6 +70,7 @@ def make_loader(args, split, group, mode, shuffle=False):
         args.manifest, split=split, group=group, mode=mode,
         selection=getattr(args, "selection", None),
         syn_index=getattr(args, "syn_index", None),
+        png_index=getattr(args, "png_index", None) if mode == "selected" else None,
         seed=args.seed, image_size=args.image_size,
         uniform=args.uniform, random_count=args.random_count,
     )

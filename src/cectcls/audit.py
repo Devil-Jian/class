@@ -52,9 +52,10 @@ def _header(path):
     }
 
 
-def _inspect_one(case, strict_mask):
+def _inspect_one(case, strict_mask, prior_headers=None):
     pid = case["patient_id"].strip()
-    notes, headers = [], {}
+    notes, headers, reused = [], {}, 0
+    prior_headers = prior_headers or {}
     for phase, col in PHASES:
         val = (case.get(col) or "").strip()
         if not val:
@@ -68,6 +69,15 @@ def _inspect_one(case, strict_mask):
             notes.append(f"{phase}_missing")
             continue
         try:
+            old = prior_headers.get(phase)
+            if old:
+                st = path.stat()
+                if (old.get("path") == str(path.resolve())
+                        and old.get("size") == st.st_size
+                        and old.get("mtime_ns") == st.st_mtime_ns):
+                    headers[phase] = old
+                    reused += 1
+                    continue
             headers[phase] = _header(path)
         except Exception as e:
             kind = "not_3d" if str(e) == "not_3d" else f"unreadable:{type(e).__name__}"
@@ -95,7 +105,7 @@ def _inspect_one(case, strict_mask):
         "pvp_shape": str(headers.get("pvp", {}).get("shape", "")),
         "mask_shape": str(headers.get("liver_mask", {}).get("shape", "")),
     }
-    return record, headers, notes
+    return record, headers, notes, reused
 
 
 def audit_images(cases_csv, out, strict_mask=False, workers=2):
@@ -109,15 +119,28 @@ def audit_images(cases_csv, out, strict_mask=False, workers=2):
     pids = [case["patient_id"].strip() for case in cases]
     if not all(pids) or len(pids) != len(set(pids)):
         raise ValueError("Duplicate/empty patient ID in locked cases CSV")
+    cache_file = Path(out).with_name("image_header_cache.json")
+    prior = {}
+    checksum = hashlib.sha256(cases_csv.read_bytes()).hexdigest()
+    if cache_file.is_file():
+        try:
+            previous = json.loads(cache_file.read_text(encoding="utf-8"))
+            if previous.get("schema") == 1 and previous.get("cases_csv_sha256") == checksum:
+                prior = previous.get("patients", {})
+        except (ValueError, OSError):
+            prior = {}
+    def inspect(case):
+        return _inspect_one(case, strict_mask, prior.get(case["patient_id"].strip()))
     if workers == 1:
-        inspected = [_inspect_one(case, strict_mask) for case in cases]
+        inspected = [inspect(case) for case in cases]
     else:
         # ThreadPoolExecutor.map retains original CSV order, so QC is deterministic.
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            inspected = list(pool.map(lambda c: _inspect_one(c, strict_mask), cases))
+            inspected = list(pool.map(inspect, cases))
     stats = Counter()
     rows, headers = [], {}
-    for row, patient_headers, notes in inspected:
+    for row, patient_headers, notes, reused in inspected:
+        stats["headers_reused"] += reused
         rows.append(row)
         headers[row["patient_id"]] = patient_headers
         stats["ready" if row["nifti_ready"] else "needs_review"] += 1
@@ -130,10 +153,9 @@ def audit_images(cases_csv, out, strict_mask=False, workers=2):
         writer = csv.DictWriter(stream, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(rows)
-    cache_file = out.with_name("image_header_cache.json")
     write_json(cache_file, {
         "schema": 1,
-        "cases_csv_sha256": hashlib.sha256(cases_csv.read_bytes()).hexdigest(),
+        "cases_csv_sha256": checksum,
         "patients": headers,
     })
     summary = {
@@ -143,6 +165,7 @@ def audit_images(cases_csv, out, strict_mask=False, workers=2):
         "out_csv": str(out), "header_cache": str(cache_file),
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "workers": workers, "voxel_data_read": False,
+        "headers_reused": stats["headers_reused"],
         "note": "Metadata-only shape/affine test, not registration accuracy or voxel-integrity QC. "
                 "REJECT remains in cohort. Mask content and semantics are NOT checked.",
     }

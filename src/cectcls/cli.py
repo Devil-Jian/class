@@ -10,6 +10,7 @@ from .manifest import prepare
 from .audit import audit_images
 from .cohort import build_cohort
 from .locked_cohort import lock_cohort
+from .qc_finalize import finalize_qc_subset
 from .png_export import export_png
 from .matching import match_ncct
 from .selection import export_selection
@@ -53,10 +54,18 @@ def make_parser():
     p.add_argument("--source", required=True)
     p.add_argument("--image-root", help="Override only the parent directory of the 1298 patient scans")
     p.add_argument("--splits-source", help="Previously fixed splits.csv, preserved verbatim by patient ID")
+    p.add_argument("--approved-report", help="Required signed-off subset report for 1183 cases")
     p.add_argument("--out", required=True)
     p.add_argument("--expected-count", type=int, default=1298)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--without-splits", action="store_true")
+
+    p = sub.add_parser("prune-qc")
+    p.add_argument("--source", required=True, help="Approved 1195-case CSV")
+    p.add_argument("--splits", required=True, help="Original 1195 fixed splits")
+    p.add_argument("--qc", required=True, help="Prior 1195/1298 QC CSV, not patient data")
+    p.add_argument("--original-1298", help="Approved 1298-case CSV, required for 1298-row QC")
+    p.add_argument("--out-dir", required=True, help="Local gitignored small input file directory")
 
     p = sub.add_parser("prepare-cohort")
     p.add_argument("--metadata", required=True)
@@ -134,7 +143,11 @@ def main(argv=None):
     if args.command == "lock-cohort":
         print(lock_cohort(args.source, args.out, expected_count=args.expected_count,
                           seed=args.seed, generate_splits=not args.without_splits,
-                          image_root=args.image_root, splits_source=args.splits_source))
+                          image_root=args.image_root, splits_source=args.splits_source,
+                          approved_report=args.approved_report))
+    elif args.command == "prune-qc":
+        print(finalize_qc_subset(args.source, args.splits, args.qc, args.out_dir,
+                                 original_1298=args.original_1298))
     elif args.command == "prepare-cohort":
         print(build_cohort(args.metadata, args.image_root, args.out,
                            label_column=args.label_column, grades=args.grades,

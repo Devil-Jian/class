@@ -138,7 +138,8 @@ def fit(args):
     model = DualPhaseMIL(args.model, n_classes, pretrained=args.pretrained,
                          phase_mode=phase_mode, freeze_encoder=args.freeze_encoder,
                          encode_chunk=args.encode_chunk,
-                         imagenet_norm=args.pretrained).to(args.device)
+                         imagenet_norm=args.pretrained,
+                         image_size=args.image_size).to(args.device)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
                                    lr=args.lr, weight_decay=args.weight_decay)
     out = Path(args.out)
@@ -201,7 +202,8 @@ def load_checkpoint(path, device):
                          pretrained=False, phase_mode=state["phase_mode"],
                          freeze_encoder=state.get("freeze_encoder", False),
                          encode_chunk=state.get("encode_chunk", 16),
-                         imagenet_norm=state.get("imagenet_norm", False))
+                         imagenet_norm=state.get("imagenet_norm", False),
+                         image_size=state.get("image_size", 224))
     model.load_state_dict(state["state_dict"], strict=True)
     return model.to(device).eval(), state
 

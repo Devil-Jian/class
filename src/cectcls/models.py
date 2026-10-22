@@ -16,7 +16,7 @@ MODEL_NAMES = {
 class DualPhaseMIL(nn.Module):
     def __init__(self, model_name="dinov2s_mil", num_classes=3,
                  pretrained=False, embed_dim=256, phase_mode="dual",
-                 freeze_encoder=False, encode_chunk=16, imagenet_norm=False):
+                 freeze_encoder=False, encode_chunk=16, imagenet_norm=False, image_size=224):
         super().__init__()
         if model_name not in MODEL_NAMES:
             raise ValueError(f"Unknown model: {model_name}")
@@ -26,12 +26,18 @@ class DualPhaseMIL(nn.Module):
         self.phase_mode = phase_mode
         self.freeze_encoder = freeze_encoder
         self.encode_chunk = encode_chunk
+        self.image_size = int(image_size)
+        if model_name == "dinov2s_mil" and self.image_size % 14 != 0:
+            raise ValueError("DINOv2-S image_size must be divisible by 14")
+        if model_name == "deit_mil" and self.image_size % 16 != 0:
+            raise ValueError("DeiT image_size must be divisible by 16")
         self.imagenet_norm = imagenet_norm
         self.register_buffer("imagenet_mean", torch.tensor([0.485, 0.456, 0.406])[None, :, None, None], persistent=False)
         self.register_buffer("imagenet_std", torch.tensor([0.229, 0.224, 0.225])[None, :, None, None], persistent=False)
-        self.encoder = timm.create_model(
-            MODEL_NAMES[model_name], pretrained=pretrained, num_classes=0,
-        )
+        model_args = {"pretrained": pretrained, "num_classes": 0}
+        if model_name != "resnet18_mil":
+            model_args["img_size"] = self.image_size
+        self.encoder = timm.create_model(MODEL_NAMES[model_name], **model_args)
         feature_dim = self.encoder.num_features
         input_dim = feature_dim * (2 if phase_mode == "dual" else 1)
         self.fusion = nn.Sequential(

@@ -1,41 +1,208 @@
-# AP/PVP Paired CECT Classification
+# CECT Classification — AP/PVP paired Attention-MIL
 
-Patient-level dual-phase CT classification with mixed slice sampling, attention MIL, auditable slice IDs, and targeted NCCT-to-CECT synthesis requests.
+Classification pipeline for registered liver CT. **No tumor-mask/lesion-detector slices are added**. Real CECT AP/PVP are jointly used to train the same task-related MIL model that later exports its Top-16 influential *anatomical positions*. NCCT matching and synthetic contrast generation follow selection.
 
-**Research protocol**: Real AP/PVP training -> paired uniform/random sampling -> Gated Attention MIL -> freeze best Real checkpoint -> full-liver attention Top-16 -> NCCT local anatomical similarity search -> synthesis requests -> five paired training configurations (NCCT, REAL, SYN, REAL-AUG, REAL+SYN 1:1). No lesion-detector slices are inserted.
+## 1. Input data
 
-## Install
+Expected directory on the GPU server:
+
+```text
+/dataset/dataset/gx_all_registered/
+  A0_1/
+    ncct_zcrop.nii.gz           # fixed NCCT, HU
+    ap_registered.nii.gz        # registered AP, HU
+    pvp_registered.nii.gz       # registered PVP, HU
+    ncct_mask_zcrop.nii.gz      # MUST be verified to mean liver mask
+```
+
+Metadata CSV: `GX_metadata_all.csv`. The cohort scanner uses `patient_id`, `分类（暂定）` (`是`), `三分类标签` (default) or `主类别`, and `配准等级` (default GOLD/SILVER). Duplicate patients with conflicting classification labels are excluded. **REJECT/unregistered records are not automatically sent into the model.** A valid image file and mask must exist unless you explicitly use `--allow-missing-mask`. Actual NIfTI **shape AND affine grid** are strictly checked at `prepare`. 512x512 in-plane size alone does not prove grid alignment.
+
+## 2. Install
+
+Python >=3.10, PyTorch, CUDA recommended:
 
 ```bash
+git clone https://github.com/Devil-Jian/class.git
+cd class
 pip install -e ".[dev]"
+pytest -q
 ```
 
-Requires Python 3.10+, PyTorch, and image volumes in **NIfTI HU**. The AP/PVP registered volumes must be resampled onto the **same NCCT fixed-image voxel grid** before indexing; mismatch is an error, not silently interpreted as a slice correspondence.
+## 3. Full training sequence
 
-## Input CSV
-
-`cases.csv`: `patient_id,label,ncct_path,ap_path,pvp_path,liver_mask_path` (mask optional; relative paths resolved relative to cases.csv). `splits.csv`: `patient_id,split` where split is train/val/test. Assign all scans of a patient to one split. Labels are encoded in `labels.json`. Hold out test patients from both the generator's and classifier's model development.
-
-## Workflow
+Copy the uploaded CSV onto the training server first, e.g. to `/dataset/dataset/GX_metadata_all.csv`. Customize `CSV` below to the actual location.
 
 ```bash
-cectcls prepare --cases data/cases.csv --splits data/splits.csv --out runs/class/manifests
-cectcls train --manifest runs/class/manifests/cases.jsonl --labels runs/class/manifests/labels.json --stage selection --model dinov2s_mil --epochs 30 --out runs/class/selection
-cectcls export-selection --manifest runs/class/manifests/cases.jsonl --checkpoint runs/class/selection/best.pt --top-k 16 --out runs/class/manifests/selected_bags.json
-cectcls match-ncct --manifest runs/class/manifests/cases.jsonl --selection runs/class/manifests/selected_bags.json --radius-mm 15 --out runs/class/manifests/matched_bags.json
-cectcls export-syn-requests --manifest runs/class/manifests/cases.jsonl --matched runs/class/manifests/matched_bags.json --out-root runs/class/syn --out runs/class/manifests/synthetic_requests.json
-# External NCCT->AP/PVP generator: read synthetic_requests.json, write HU-valued float32 .npy images to the prescribed output paths.
-cectcls register-syn --requests runs/class/manifests/synthetic_requests.json --out runs/class/manifests/syn_index.json
-cectcls train --manifest runs/class/manifests/cases.jsonl --labels runs/class/manifests/labels.json --stage selected --selection runs/class/manifests/matched_bags.json --syn-index runs/class/manifests/syn_index.json --group cect_real_syn --model dinov2s_mil --out runs/class/real_syn
-cectcls evaluate --manifest runs/class/manifests/cases.jsonl --labels runs/class/manifests/labels.json --selection runs/class/manifests/matched_bags.json --checkpoint runs/class/real_syn/best.pt --split test --out runs/class/real_syn/test.json
+export CSV=/dataset/dataset/GX_metadata_all.csv
+export ROOT=/dataset/dataset/gx_all_registered
+export WORK=/dataset/downstream_classification
+mkdir -p "$WORK"
 ```
 
-`train --stage selection` uses 16 uniform + 16 stochastic paired anatomical positions per training epoch. Validation uses deterministic positions. `export-selection` scores **all liver-containing paired slices with the same trained model** and writes 16 fixed anatomical positions per patient, separately including AP/PVP slice IDs and attention scores. Phase fusion precedes MIL attention.
+### Step A — Create patient manifests and splits (CPU)
 
-`match-ncct` searches near the fixed-space reference plane with NMI, NCC and a physical-distance penalty, plus a nondecreasing sequence constraint. A similarity score alone is not evidence of anatomical correspondence; inspect `matching_status` and QC before synthesis. AP and PVP are synthesized from the **same matched NCCT slice**, while the original Real target IDs are kept unchanged.
+```bash
+cectcls prepare-cohort \
+  --metadata "$CSV" \
+  --image-root "$ROOT" \
+  --label-column 三分类标签 \
+  --grades GOLD SILVER \
+  --out "$WORK/cohort"
 
-Use `--model resnet18_mil|deit_mil|dinov2s_mil`, `--group ncct|cect_real|cect_syn|cect_real_aug|cect_real_syn`. For real_aug and real_syn, a balanced patient sampler assigns approximately half the patients to the original view and half to the augmented/synthetic view each epoch (exact 1:1 when the train patient count is even). Each patient contributes one example per epoch, keeping training steps comparable to REAL. Training/validation/test always split by patient. For contrast-enhanced groups validation and test inputs are Real CECT; NCCT group is evaluated on NCCT.
+cat "$WORK/cohort/cohort_report.json"
 
-**Pretrained backbones**: set `--pretrained` to enable timm weights (may download); for offline experiments pre-download weights or supply a model-cache. Default is uninitialized weights; report this choice in the paper. The external synthesis implementation and clinical truth annotation are not included. The synthesis request JSON explicitly includes the NCCT NIfTI path, matched axial slice ID, target phase and expected output path. Matching statuses are provisional until checked against anatomical landmarks; do not treat a high correlation alone as validated alignment.
+cectcls prepare \
+  --cases "$WORK/cohort/cases.csv" \
+  --splits "$WORK/cohort/splits.csv" \
+  --out "$WORK/manifests"
+```
 
-Tests: `pytest -q`.
+Artifacts: `cohort/cases.csv`, `cohort/splits.csv`, `cohort/cohort_report.json`; `manifests/cases.jsonl`, `labels.json`, `qc.json`. The 70/15/15 split is patient-level and stratified by label. If a class contains too few patients, the split report warns that a separate test estimate is unavailable. **Review label distribution and all exclusions before training.** For a secondary disease-type experiment use `--label-column 主类别`, with a separate `--out` to prevent overwrites.
+
+### Step B — Train Real AP+PVP Attention-MIL for task-related selection (GPU)
+
+```bash
+cectcls train \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --labels "$WORK/manifests/labels.json" \
+  --stage selection \
+  --group cect_real \
+  --model dinov2s_mil \
+  --uniform 16 --random-count 16 \
+  --image-size 224 --batch-size 2 \
+  --pretrained --freeze-encoder \
+  --epochs 30 --device cuda \
+  --out "$WORK/selection"
+```
+
+Every epoch: 16 uniformly spaced + 16 random, same physical positions for AP and PVP. Outputs: `selection/best.pt`, validation results, and `training_sampled_slices.jsonl` with separate AP/PVP slice IDs. **The selection-stage model consumes full HU NIfTI, windowed to [-160,240] on loading.** No separate selector model is trained.
+
+### Step C — Use the frozen Real classification MIL to export Top-16 (GPU)
+
+```bash
+cectcls export-selection \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --checkpoint "$WORK/selection/best.pt" \
+  --top-k 16 --device cuda \
+  --out "$WORK/manifests/selected_bags.json"
+```
+
+This scores all valid liver-containing registered paired slices (not merely the epoch's sampled 32). Select 16 paired positions. Stores `reference_slice_id`, `ap_registered_slice_id`, `pvp_registered_slice_id`, attention score and patient split. Selection model is trained on train patients and tuned on val patients only; never trained on held-out test patients.
+
+### Step D — Local NCCT slice matching (CPU)
+
+```bash
+cectcls match-ncct \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --selection "$WORK/manifests/selected_bags.json" \
+  --radius-mm 15 \
+  --out "$WORK/manifests/matched_bags.json"
+```
+
+Within NCCT fixed-space neighborhoods, score candidate planes using liver-ROI NMI, NCC, z-distance and a monotonic dynamic-programming constraint. One matched NCCT location yields both synthetic AP and PVP. Check match status and anatomy; **similarity metrics do not establish anatomical ground truth**. Never silently remove mismatch patients from the locked test set.
+
+### Step E — Targeted synthesis: TRAIN patients only
+
+```bash
+cectcls export-syn-requests \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --matched "$WORK/manifests/matched_bags.json" \
+  --split train \
+  --out-root "$WORK/synthetic_hu" \
+  --out "$WORK/manifests/synthetic_requests.json"
+```
+
+The external NCCT->CECT generator (not included here) reads `synthetic_requests.json`. Every request supplies `ncct_path`, `matched_ncct_slice_id`, `target_phase` (ap/pvp), `reference_slice_id`, and `output_path`. It writes **2D finite float32 HU `.npy` files**, oriented as rows=y, columns=x. Then:
+
+```bash
+cectcls register-syn \
+  --requests "$WORK/manifests/synthetic_requests.json" \
+  --out "$WORK/manifests/syn_index.json"
+```
+
+Do not generate test-patient Syn data for the main **Real-test** training-utility study.
+
+### Step F — Export final selected PNGs (CPU)
+
+```bash
+cectcls export-png \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --selection "$WORK/manifests/matched_bags.json" \
+  --syn-index "$WORK/manifests/syn_index.json" \
+  --out "$WORK/png"
+```
+
+Stores **lossless 8-bit grayscale PNG** with fixed HU window [-160,240] (PNG is not HU). Structure:
+
+```text
+$WORK/png/
+  real/ap/<patient_id>/ref_0042.png
+  real/pvp/<patient_id>/ref_0042.png
+  ncct/ncct/<patient_id>/ref_0042.png
+  syn/ap/<patient_id>/ref_0042.png
+  syn/pvp/<patient_id>/ref_0042.png
+  png_index.json
+  png_export_summary.json
+```
+
+The `ref_0042` filename names the target anatomical reference plane, **not** the matched NCCT index. True source slice IDs remain in `matched_bags.json`. Real + NCCT PNGs are exported for train/val/test; synthetic PNGs are exported **for train only**.
+
+### Step G — Five formal PNG training groups (GPU)
+
+Quick REAL group smoke test:
+
+```bash
+cectcls train \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --labels "$WORK/manifests/labels.json" \
+  --stage selected --selection "$WORK/manifests/matched_bags.json" \
+  --png-index "$WORK/png/png_index.json" \
+  --model resnet18_mil --group cect_real \
+  --pretrained --freeze-encoder --epochs 3 --batch-size 2 \
+  --device cuda --out "$WORK/experiments/smoke_real"
+```
+
+Then train all 3 backbones x 5 groups = **15 formal configurations** (not including initial selection model):
+
+```bash
+cectcls train-grid \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --labels "$WORK/manifests/labels.json" \
+  --selection "$WORK/manifests/matched_bags.json" \
+  --png-index "$WORK/png/png_index.json" \
+  --pretrained --freeze-encoder --epochs 30 --batch-size 2 \
+  --device cuda --out "$WORK/experiments"
+```
+
+Data groups:
+- `ncct` — NCCT, trained and tested on NCCT.
+- `cect_real` — REAL AP+PVP; trained/tested on Real CECT.
+- `cect_syn` — SYN AP+PVP; trained on Syn and evaluated on Real.
+- `cect_real_aug` — REAL-AUG: approximately 1:1 Real : affine-augmented Real training views; Real evaluation.
+- `cect_real_syn` — REAL+SYN: approximately 1:1 Real : Syn paired training views; Real evaluation.
+
+The balanced-source sampler keeps **one example per training patient per epoch**, making optimizer steps comparable rather than doubling steps for augmentation groups. No geometric augmentation is used in val/test.
+
+### Step H — Independent real-image test evaluation
+
+```bash
+cectcls evaluate \
+  --manifest "$WORK/manifests/cases.jsonl" \
+  --labels "$WORK/manifests/labels.json" \
+  --selection "$WORK/manifests/matched_bags.json" \
+  --png-index "$WORK/png/png_index.json" \
+  --checkpoint "$WORK/experiments/dinov2s_mil/cect_syn/best.pt" \
+  --split test --device cuda \
+  --out "$WORK/experiments/dinov2s_mil/cect_syn/test.json"
+```
+
+Outputs include Macro-AUC (when evaluable), Macro-F1, balanced accuracy, and patient-level probabilities with selected AP/PVP IDs.
+
+## 4. Important experiment boundaries
+
+- Using *Real CECT attention* to select locations makes this a **CECT-guided paired-slice training-utility evaluation**, not an end-to-end NCCT-only clinical selection workflow.
+- PNG quantizes [-160,240] HU to 256 levels. Keep source NIfTI in HU for matching and generation.
+- `ncct_mask_zcrop.nii.gz` must be verified to represent **liver anatomy**, not a tumor-only mask. Otherwise `--allow-missing-mask` disables liver-mask sampling (all axial planes become candidates) until a true liver mask is supplied.
+- The image-generation model and downstream held-out test set must be disjoint at patient level. Patients from generation training must not be represented as an independent synthesis holdout.
+- `--pretrained` requests timm weights; allow downloads or pre-cache in restricted environments. Without the flag, encoders are randomly initialized.
+- For clinical datasets, inspect `cohort_report.json`, split label counts, matching QC, and selected slice distributions before the full run.

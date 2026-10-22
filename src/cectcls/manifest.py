@@ -65,7 +65,7 @@ def _assert_registered(fixed, moving, name, patient_id):
         )
 
 
-def prepare(cases_csv, splits_csv, out):
+def prepare(cases_csv, splits_csv, out, label_map_path=None):
     """Fail closed for split, shape, affine, ID, and label inconsistencies."""
     cases_csv, splits_csv, out = Path(cases_csv), Path(splits_csv), Path(out)
     with splits_csv.open(newline="", encoding="utf-8-sig") as f:
@@ -81,7 +81,14 @@ def prepare(cases_csv, splits_csv, out):
         case_rows = list(csv.DictReader(f))
     if not case_rows:
         raise ValueError("Empty cases CSV")
-    labels = {name: i for i, name in enumerate(sorted({r["label"].strip() for r in case_rows}))}
+    if label_map_path is not None:
+        labels = read_json(label_map_path)
+        if set(r["label"].strip() for r in case_rows) - set(labels):
+            raise ValueError("Cases contain classes absent from fixed label_map")
+        if sorted(labels.values()) != list(range(len(labels))):
+            raise ValueError("Fixed label_map indices must be contiguous from zero")
+    else:
+        labels = {name: i for i, name in enumerate(sorted({r["label"].strip() for r in case_rows}))}
     records = []
     seen = set()
     for r in case_rows:

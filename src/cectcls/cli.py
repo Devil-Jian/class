@@ -73,9 +73,12 @@ def make_parser():
     p.add_argument("--cases", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--strict-mask", action="store_true")
+    p.add_argument("--workers", type=int, default=2, help="Header QC threads; 1-2 suggested for HDD")
 
     p = sub.add_parser("prepare")
     p.add_argument("--label-map")
+    p.add_argument("--header-cache", help="Validated audit-images image_header_cache.json")
+    p.add_argument("--no-mask-cache", action="store_true")
     p.add_argument("--cases", required=True)
     p.add_argument("--splits", required=True)
     p.add_argument("--out", required=True)
@@ -138,9 +141,12 @@ def main(argv=None):
                            train_ratio=args.train_ratio, val_ratio=args.val_ratio,
                            seed=args.seed, require_mask=not args.allow_missing_mask))
     elif args.command == "audit-images":
-        print(audit_images(args.cases, args.out, strict_mask=args.strict_mask))
+        print(audit_images(args.cases, args.out, strict_mask=args.strict_mask,
+                           workers=args.workers))
     elif args.command == "prepare":
-        records = prepare(args.cases, args.splits, args.out, label_map_path=args.label_map)
+        records = prepare(args.cases, args.splits, args.out, label_map_path=args.label_map,
+                          header_cache_path=args.header_cache,
+                          reuse_mask_cache=not args.no_mask_cache)
         print(f"Prepared {len(records)} patients")
     elif args.command == "train":
         print(fit(args))

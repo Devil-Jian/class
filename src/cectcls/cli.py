@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 
 from .manifest import prepare
+from .cohort import build_cohort
+from .png_export import export_png
 from .matching import match_ncct
 from .selection import export_selection
 from .synthesis import export_requests, register_outputs
@@ -20,6 +22,7 @@ def _training_options(parser, include_stage=True):
         parser.add_argument("--stage", choices=["selection", "selected"], default="selected")
     parser.add_argument("--selection")
     parser.add_argument("--syn-index")
+    parser.add_argument("--png-index")
     parser.add_argument("--group", default="cect_real",
                         choices=["ncct", "cect_real", "cect_syn", "cect_real_aug", "cect_real_syn"])
     parser.add_argument("--model", default="dinov2s_mil",
@@ -43,6 +46,17 @@ def _training_options(parser, include_stage=True):
 def make_parser():
     parser = argparse.ArgumentParser(prog="cectcls")
     sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("prepare-cohort")
+    p.add_argument("--metadata", required=True)
+    p.add_argument("--image-root", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--label-column", choices=["三分类标签", "主类别"], default="三分类标签")
+    p.add_argument("--grades", nargs="+", default=["GOLD", "SILVER"])
+    p.add_argument("--train-ratio", type=float, default=0.70)
+    p.add_argument("--val-ratio", type=float, default=0.15)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--allow-missing-mask", action="store_true")
+
     p = sub.add_parser("prepare")
     p.add_argument("--cases", required=True)
     p.add_argument("--splits", required=True)
@@ -76,6 +90,12 @@ def make_parser():
     p.add_argument("--out-root", required=True)
     p.add_argument("--out", required=True)
 
+    p = sub.add_parser("export-png")
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--selection", required=True)
+    p.add_argument("--syn-index")
+    p.add_argument("--out", required=True)
+
     p = sub.add_parser("register-syn")
     p.add_argument("--requests", required=True)
     p.add_argument("--out", required=True)
@@ -89,7 +109,12 @@ def make_parser():
 
 def main(argv=None):
     args = make_parser().parse_args(argv)
-    if args.command == "prepare":
+    if args.command == "prepare-cohort":
+        print(build_cohort(args.metadata, args.image_root, args.out,
+                           label_column=args.label_column, grades=args.grades,
+                           train_ratio=args.train_ratio, val_ratio=args.val_ratio,
+                           seed=args.seed, require_mask=not args.allow_missing_mask))
+    elif args.command == "prepare":
         records = prepare(args.cases, args.splits, args.out)
         print(f"Prepared {len(records)} patients")
     elif args.command == "train":
@@ -111,6 +136,8 @@ def main(argv=None):
         print(f"Matched {len(match_ncct(args.manifest, args.selection, args.out, args.radius_mm, args.stride))} patients")
     elif args.command == "export-syn-requests":
         print(f"Exported {len(export_requests(args.matched, args.out_root, args.out, args.manifest))} requests")
+    elif args.command == "export-png":
+        print(f"Exported {len(export_png(args.manifest, args.selection, args.out, args.syn_index))} PNGs")
     elif args.command == "register-syn":
         print(f"Registered {len(register_outputs(args.requests, args.out))} synthetic images")
     elif args.command == "evaluate":

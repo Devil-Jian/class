@@ -13,7 +13,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, r
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from .dataset import PatientBagDataset, collate_bags
+from .dataset import PatientBagDataset, BalancedSourceSampler, collate_bags
 from .manifest import read_json, write_json
 from .models import DualPhaseMIL
 
@@ -73,7 +73,13 @@ def make_loader(args, split, group, mode, shuffle=False):
         seed=args.seed, image_size=args.image_size,
         uniform=args.uniform, random_count=args.random_count,
     )
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=shuffle,
+    source_sampler = (
+        BalancedSourceSampler(dataset, seed=args.seed)
+        if shuffle and mode == "selected" and group in {"cect_real_aug", "cect_real_syn"}
+        else None
+    )
+    loader = DataLoader(dataset, batch_size=args.batch_size,
+                        shuffle=shuffle and source_sampler is None, sampler=source_sampler,
                         num_workers=args.workers, collate_fn=collate_bags)
     return dataset, loader
 
@@ -93,7 +99,8 @@ def fit(args):
     phase_mode = "ncct" if args.group == "ncct" else "dual"
     model = DualPhaseMIL(args.model, n_classes, pretrained=args.pretrained,
                          phase_mode=phase_mode, freeze_encoder=args.freeze_encoder,
-                         encode_chunk=args.encode_chunk).to(args.device)
+                         encode_chunk=args.encode_chunk,
+                         imagenet_norm=args.pretrained).to(args.device)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
                                    lr=args.lr, weight_decay=args.weight_decay)
     out = Path(args.out)
@@ -136,6 +143,7 @@ def fit(args):
                 "state_dict": model.state_dict(), "model_name": args.model,
                 "num_classes": n_classes, "phase_mode": phase_mode,
                 "freeze_encoder": args.freeze_encoder, "encode_chunk": args.encode_chunk,
+                "imagenet_norm": args.pretrained,
                 "stage": args.stage, "group": args.group, "epoch": epoch,
                 "label_map": labels, "manifest_sha256": source_sha,
                 "image_size": args.image_size,
@@ -152,7 +160,8 @@ def load_checkpoint(path, device):
     model = DualPhaseMIL(state["model_name"], state["num_classes"],
                          pretrained=False, phase_mode=state["phase_mode"],
                          freeze_encoder=state.get("freeze_encoder", False),
-                         encode_chunk=state.get("encode_chunk", 16))
+                         encode_chunk=state.get("encode_chunk", 16),
+                         imagenet_norm=state.get("imagenet_norm", False))
     model.load_state_dict(state["state_dict"], strict=True)
     return model.to(device).eval(), state
 

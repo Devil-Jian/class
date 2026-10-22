@@ -4,7 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
+import random
 
 from .imaging import augment_pair, image_tensor
 from .manifest import read_json, read_jsonl
@@ -101,6 +102,30 @@ class PatientBagDataset(Dataset):
             "ap_slice_ids": ap_ids, "pvp_slice_ids": pvp_ids,
             "sampling": sample, "source": "syn" if use_syn else ("real_aug" if augmented else self.group),
         }
+
+
+class BalancedSourceSampler(Sampler):
+    """Exactly one view per patient per epoch, half Real and half Syn/Aug.
+
+    This gives comparable patient counts and optimization steps across groups.
+    Source assignment changes with epoch; every patient is included once.
+    """
+    def __init__(self, dataset, seed=42):
+        if dataset.group not in {"cect_real_aug", "cect_real_syn"} or dataset.split != "train":
+            raise ValueError("BalancedSourceSampler requires train mixed-source dataset")
+        self.dataset, self.seed = dataset, int(seed)
+
+    def __len__(self):
+        return len(self.dataset.cases)
+
+    def __iter__(self):
+        n = len(self.dataset.cases)
+        order = list(range(n))
+        rng = random.Random(self.seed + self.dataset.epoch * 100003)
+        rng.shuffle(order)
+        n_second = n // 2 + (self.dataset.epoch % 2 if n % 2 else 0)
+        for j, i in enumerate(order):
+            yield i + (n if j < n_second else 0)
 
 
 def collate_bags(items):

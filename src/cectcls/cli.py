@@ -8,6 +8,7 @@ import torch
 
 from .manifest import prepare
 from .cohort import build_cohort
+from .locked_cohort import lock_cohort
 from .png_export import export_png
 from .matching import match_ncct
 from .selection import export_selection
@@ -46,6 +47,13 @@ def _training_options(parser, include_stage=True):
 def make_parser():
     parser = argparse.ArgumentParser(prog="cectcls")
     sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("lock-cohort")
+    p.add_argument("--source", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--expected-count", type=int, default=1298)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--without-splits", action="store_true")
+
     p = sub.add_parser("prepare-cohort")
     p.add_argument("--metadata", required=True)
     p.add_argument("--image-root", required=True)
@@ -58,6 +66,7 @@ def make_parser():
     p.add_argument("--allow-missing-mask", action="store_true")
 
     p = sub.add_parser("prepare")
+    p.add_argument("--label-map")
     p.add_argument("--cases", required=True)
     p.add_argument("--splits", required=True)
     p.add_argument("--out", required=True)
@@ -110,13 +119,16 @@ def make_parser():
 
 def main(argv=None):
     args = make_parser().parse_args(argv)
-    if args.command == "prepare-cohort":
+    if args.command == "lock-cohort":
+        print(lock_cohort(args.source, args.out, expected_count=args.expected_count,
+                          seed=args.seed, generate_splits=not args.without_splits))
+    elif args.command == "prepare-cohort":
         print(build_cohort(args.metadata, args.image_root, args.out,
                            label_column=args.label_column, grades=args.grades,
                            train_ratio=args.train_ratio, val_ratio=args.val_ratio,
                            seed=args.seed, require_mask=not args.allow_missing_mask))
     elif args.command == "prepare":
-        records = prepare(args.cases, args.splits, args.out)
+        records = prepare(args.cases, args.splits, args.out, label_map_path=args.label_map)
         print(f"Prepared {len(records)} patients")
     elif args.command == "train":
         print(fit(args))

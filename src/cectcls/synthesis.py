@@ -5,11 +5,14 @@ from pathlib import Path
 
 import numpy as np
 
-from .manifest import read_json, write_json
+from .manifest import read_json, read_jsonl, write_json
 
 
-def export_requests(matched, output_root, out):
+def export_requests(matched, output_root, out, manifest=None):
     patients = read_json(matched)
+    patient_cases = {row["patient_id"]: row for row in read_jsonl(manifest)} if manifest else {}
+    if manifest and any(row["patient_id"] not in patient_cases for row in patients):
+        raise ValueError("Synthesis request references patients absent from source manifest")
     root = Path(output_root).resolve()
     requests, keys = [], set()
     for patient in patients:
@@ -26,6 +29,7 @@ def export_requests(matched, output_root, out):
                 requests.append({
                     "key": key, "patient_id": pid, "target_phase": phase,
                     "reference_slice_id": ref, "matched_ncct_slice_id": ncct,
+                    "ncct_path": patient_cases[pid]["volumes"]["ncct"] if manifest else None,
                     "output_path": str(target),
                     "matching_status": pos.get("matching_status", "unknown"),
                     "note": "Generator must write 2D float32 HU as [H=y,W=x], consistent with Real NIfTI slice transpose",

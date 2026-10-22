@@ -5,7 +5,10 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, Sampler
+from PIL import Image
+import numpy as np
 import random
+import torch.nn.functional as F
 
 from .imaging import augment_pair, image_tensor
 from .manifest import read_json, read_jsonl
@@ -14,7 +17,7 @@ from .sampling import mixed_sample
 
 class PatientBagDataset(Dataset):
     def __init__(self, manifest, split, group="cect_real", mode="mixed", selection=None,
-                 syn_index=None, seed=42, image_size=224, uniform=16, random_count=16):
+                 syn_index=None, png_index=None, seed=42, image_size=224, uniform=16, random_count=16):
         self.cases = [r for r in read_jsonl(manifest) if r["split"] == split]
         self.split, self.group, self.mode = split, group, mode
         self.seed, self.epoch = seed, 0
@@ -30,10 +33,11 @@ class PatientBagDataset(Dataset):
             raise ValueError("selected mode requires --selection manifest")
         self.selected = {r["patient_id"]: r for r in read_json(selection)} if selection else {}
         self.syn_index = read_json(syn_index) if syn_index else {}
+        self.png_index = read_json(png_index) if png_index else {}
         if any(r["patient_id"] not in self.selected for r in self.cases) and mode == "selected":
             raise ValueError("Selection missing patients in split")
-        if group in {"cect_syn", "cect_real_syn"} and not syn_index:
-            raise ValueError(f"{group} requires a registered --syn-index")
+        if group in {"cect_syn", "cect_real_syn"} and not (syn_index or png_index):
+            raise ValueError(f"{group} requires --syn-index or --png-index")
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
@@ -65,6 +69,18 @@ class PatientBagDataset(Dataset):
             raise KeyError(f"Missing synthesized output for {key}; register-syn first")
         return index[key]
 
+    def _load(self, patient, ref, source, phase, path, slice_id):
+        if self.png_index:
+            key = f"{patient}|{ref}|{source}|{phase}"
+            if key not in self.png_index:
+                raise KeyError(f"PNG index missing {key}: run export-png with all required sources")
+            with Image.open(self.png_index[key]) as im:
+                array = np.asarray(im.convert("L"), dtype=np.float32) / 255.0
+            x = torch.from_numpy(np.ascontiguousarray(array))[None, None]
+            return F.interpolate(x, (self.image_size, self.image_size),
+                                 mode="bilinear", align_corners=False)[0]
+        return image_tensor(path, slice_id, self.image_size)
+
     def __getitem__(self, index):
         n = len(self.cases)
         case = self.cases[index % n]
@@ -87,8 +103,10 @@ class PatientBagDataset(Dataset):
             else:
                 a_path, a_id = case["volumes"]["ap"], apid
                 p_path, p_id = case["volumes"]["pvp"], pvpid
-            ap_images.append(image_tensor(a_path, a_id, self.image_size))
-            pvp_images.append(image_tensor(p_path, p_id, self.image_size))
+            source = "ncct" if self.group == "ncct" else ("syn" if use_syn else "real")
+            phase_a, phase_p = ("ncct", "ncct") if source == "ncct" else ("ap", "pvp")
+            ap_images.append(self._load(case["patient_id"], ref, source, phase_a, a_path, a_id))
+            pvp_images.append(self._load(case["patient_id"], ref, source, phase_p, p_path, p_id))
             ref_ids.append(ref)
             ap_ids.append(apid)
             pvp_ids.append(pvpid)

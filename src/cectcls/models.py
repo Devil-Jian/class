@@ -16,7 +16,7 @@ MODEL_NAMES = {
 class DualPhaseMIL(nn.Module):
     def __init__(self, model_name="dinov2s_mil", num_classes=3,
                  pretrained=False, embed_dim=256, phase_mode="dual",
-                 freeze_encoder=False, encode_chunk=16):
+                 freeze_encoder=False, encode_chunk=16, imagenet_norm=False):
         super().__init__()
         if model_name not in MODEL_NAMES:
             raise ValueError(f"Unknown model: {model_name}")
@@ -26,6 +26,9 @@ class DualPhaseMIL(nn.Module):
         self.phase_mode = phase_mode
         self.freeze_encoder = freeze_encoder
         self.encode_chunk = encode_chunk
+        self.imagenet_norm = imagenet_norm
+        self.register_buffer("imagenet_mean", torch.tensor([0.485, 0.456, 0.406])[None, :, None, None], persistent=False)
+        self.register_buffer("imagenet_std", torch.tensor([0.229, 0.224, 0.225])[None, :, None, None], persistent=False)
         self.encoder = timm.create_model(
             MODEL_NAMES[model_name], pretrained=pretrained, num_classes=0,
         )
@@ -56,6 +59,8 @@ class DualPhaseMIL(nn.Module):
             # Match the 3-channel ImageNet-pretrained feature extractor input.
             if chunk.shape[1] == 1:
                 chunk = chunk.expand(-1, 3, -1, -1)
+            if self.imagenet_norm:
+                chunk = (chunk - self.imagenet_mean) / self.imagenet_std
             if self.freeze_encoder:
                 with torch.no_grad():
                     y = self.encoder(chunk)

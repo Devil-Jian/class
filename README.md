@@ -28,7 +28,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-## 3. Full training sequence
+## 3. Full training sequence (use Step 0 for this study)
 
 Copy the uploaded CSV onto the training server first, e.g. to `/dataset/dataset/GX_metadata_all.csv`. Customize `CSV` below to the actual location.
 
@@ -39,7 +39,35 @@ export WORK=/dataset/downstream_classification
 mkdir -p "$WORK"
 ```
 
-### Step A — Create patient manifests and splits (CPU)
+### Step 0 — Lock the approved 1,298-case primary classification cohort (CPU)
+
+The authoritative list is `classification_main5_1298_including_REJECT.csv` downloaded from the conversation. Copy it to the training server. This step **does not** reselect patients from the whole GX metadata file; it verifies the exact 1,298 approved patient IDs + disease labels against a stable SHA-256 fingerprint. It keeps all `REJECT` patients, while reporting their registration/synthesis QC separately.
+
+```bash
+export LOCKED=/dataset/dataset/classification_main5_1298_including_REJECT.csv
+export WORK=/dataset/downstream_classification
+
+cectcls lock-cohort \
+  --source "$LOCKED" \
+  --out "$WORK/cohort" \
+  --seed 42
+
+cat "$WORK/cohort/cohort_lock_report.json"
+
+cectcls prepare \
+  --cases "$WORK/cohort/cases.csv" \
+  --splits "$WORK/cohort/splits.csv" \
+  --label-map "$WORK/cohort/labels.json" \
+  --out "$WORK/manifests"
+```
+
+Expected distribution: HCC=724, metastases=92, cyst=188, hemangioma=56, normal=238; `GOLD=543, SILVER=19, REJECT=736`. The canonical primary class indices are `正常=0`, `肝囊肿=1`, `血管瘤=2`, `HCC=3`, `转移瘤=4`.
+
+**Important**: `prepare` checks actual file existence and common NIfTI shape+affine. A failed QC is not an instruction to silently discard a locked patient. Report and resolve the discrepancy with source images/registration before finalizing the main Real/Syn cohort. Do not confuse patient membership with successful NCCT-to-CECT slice matching. Patient ID prefixes are explicitly used as a stratification axis, but cannot eliminate disease/source confounding when a disease is absent from a source.
+
+### Step A — Alternative: construct a NEW cohort from raw GX metadata (not for the approved 1,298)
+
+
 
 ```bash
 cectcls prepare-cohort \

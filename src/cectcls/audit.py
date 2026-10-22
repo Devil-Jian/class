@@ -1,8 +1,16 @@
-"""Audit every locked patient image WITHOUT deleting or altering the cohort."""
+"""Fast, non-destructive NIfTI header audit for the exact locked cohort.
+
+Use NIfTI headers ONLY. In particular, do not call as_closest_canonical on
+image voxel data during audit: axis reorientation can decompress .nii.gz.
+"""
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import nibabel as nib
@@ -10,78 +18,132 @@ import numpy as np
 
 from .manifest import write_json
 
+PHASES = (
+    ("ncct", "ncct_path"), ("ap", "ap_path"),
+    ("pvp", "pvp_path"), ("liver_mask", "liver_mask_path"),
+)
+FIELDS = (
+    "patient_id", "label", "nifti_ready", "issues", "ncct_shape",
+    "ap_shape", "pvp_shape", "mask_shape",
+)
 
-def audit_images(cases_csv, out, strict_mask=False):
+
+def _header(path):
+    """Return canonical shape/affine from metadata without touching voxel array."""
+    image = nib.load(str(path))
+    if len(image.shape) != 3:
+        raise ValueError("not_3d")
+    orient = nib.orientations.io_orientation(image.affine)
+    ras = np.array([[0., 1.], [1., 1.], [2., 1.]])
+    if not np.all(np.isfinite(orient)):
+        raise ValueError("bad_orientation")
+    transform = nib.orientations.ornt_transform(orient, ras)
+    shape = [int(image.shape[int(axis)]) for axis in transform[:, 0]]
+    affine = image.affine @ nib.orientations.inv_ornt_aff(transform, image.shape)
+    if not np.isfinite(affine).all():
+        raise ValueError("bad_affine")
+    stat = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "shape": shape,
+        "affine": np.asarray(affine, dtype=float).tolist(),
+    }
+
+
+def _inspect_one(case, strict_mask):
+    pid = case["patient_id"].strip()
+    notes, headers = [], {}
+    for phase, col in PHASES:
+        val = (case.get(col) or "").strip()
+        if not val:
+            if phase == "liver_mask" and not strict_mask:
+                notes.append("mask_path_missing")
+                continue
+            notes.append(f"{phase}_missing")
+            continue
+        path = Path(val)
+        if not path.is_file():
+            notes.append(f"{phase}_missing")
+            continue
+        try:
+            headers[phase] = _header(path)
+        except Exception as e:
+            kind = "not_3d" if str(e) == "not_3d" else f"unreadable:{type(e).__name__}"
+            notes.append(f"{phase}_{kind}")
+    if "ncct" in headers:
+        fixed = headers["ncct"]
+        for phase in ("ap", "pvp", "liver_mask"):
+            moving = headers.get(phase)
+            if moving and (
+                moving["shape"] != fixed["shape"] or
+                not np.allclose(moving["affine"], fixed["affine"], atol=1e-3, rtol=0)
+            ):
+                notes.append(f"{phase}_grid_mismatch")
+    critical = (
+        "_missing", "_grid_mismatch", "_not_3d", "_unreadable", "_bad_orientation",
+        "_bad_affine",
+    )
+    ready = not any(any(s in x for s in critical) for x in notes)
+    record = {
+        "patient_id": pid, "label": case["label"],
+        "nifti_ready": ready, "issues": ";".join(notes),
+        "ncct_shape": str(headers.get("ncct", {}).get("shape", "")),
+        "ap_shape": str(headers.get("ap", {}).get("shape", "")),
+        "pvp_shape": str(headers.get("pvp", {}).get("shape", "")),
+        "mask_shape": str(headers.get("liver_mask", {}).get("shape", "")),
+    }
+    return record, headers, notes
+
+
+def audit_images(cases_csv, out, strict_mask=False, workers=2):
+    """Scan all 1298; threads are deliberately limited for rotating HDD storage."""
+    if not 1 <= workers <= 8:
+        raise ValueError("workers must be between 1 and 8; prefer 1-2 on HDD")
+    started = time.monotonic()
     cases_csv = Path(cases_csv)
     with cases_csv.open("r", encoding="utf-8-sig", newline="") as handle:
         cases = list(csv.DictReader(handle))
-    results, stats = [], Counter()
-    seen = set()
-    for case in cases:
-        pid = case["patient_id"].strip()
-        if pid in seen:
-            raise ValueError(f"Duplicate case {pid}")
-        seen.add(pid)
-        notes, shapes, affines = [], {}, {}
-        for phase, col in (("ncct", "ncct_path"), ("ap", "ap_path"),
-                           ("pvp", "pvp_path"), ("liver_mask", "liver_mask_path")):
-            val = (case.get(col) or "").strip()
-            if not val and phase == "liver_mask" and not strict_mask:
-                notes.append("mask_path_missing")
-                continue
-            if not val or not Path(val).is_file():
-                notes.append(f"{phase}_missing")
-                continue
-            try:
-                im = nib.as_closest_canonical(nib.load(val))
-                if len(im.shape) != 3:
-                    notes.append(f"{phase}_not_3d")
-                    continue
-                shapes[phase] = [int(x) for x in im.shape]
-                affines[phase] = np.asarray(im.affine)
-            except Exception as e:
-                notes.append(f"{phase}_unreadable:{type(e).__name__}")
-        if "ncct" in shapes:
-            for phase in ("ap", "pvp", "liver_mask"):
-                if phase in shapes and (
-                    shapes[phase] != shapes["ncct"] or
-                    not np.allclose(affines[phase], affines["ncct"], rtol=0, atol=1e-3)
-                ):
-                    notes.append(f"{phase}_grid_mismatch")
-        ready = not any(
-            x.endswith("_missing") or "_grid_mismatch" in x or "_not_3d" in x
-            or "_unreadable" in x or x == "mask_path_missing" and strict_mask
-            for x in notes
-        )
-        if ready:
-            stats["ready"] += 1
-        else:
-            stats["needs_review"] += 1
+    pids = [case["patient_id"].strip() for case in cases]
+    if not all(pids) or len(pids) != len(set(pids)):
+        raise ValueError("Duplicate/empty patient ID in locked cases CSV")
+    if workers == 1:
+        inspected = [_inspect_one(case, strict_mask) for case in cases]
+    else:
+        # ThreadPoolExecutor.map retains original CSV order, so QC is deterministic.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            inspected = list(pool.map(lambda c: _inspect_one(c, strict_mask), cases))
+    stats = Counter()
+    rows, headers = [], {}
+    for row, patient_headers, notes in inspected:
+        rows.append(row)
+        headers[row["patient_id"]] = patient_headers
+        stats["ready" if row["nifti_ready"] else "needs_review"] += 1
         for note in notes:
             stats[note] += 1
-        results.append({
-            "patient_id": pid, "label": case["label"],
-            "nifti_ready": ready, "issues": ";".join(notes),
-            "ncct_shape": str(shapes.get("ncct", "")),
-            "ap_shape": str(shapes.get("ap", "")),
-            "pvp_shape": str(shapes.get("pvp", "")),
-            "mask_shape": str(shapes.get("liver_mask", "")),
-        })
+
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["patient_id", "label", "nifti_ready", "issues",
-              "ncct_shape", "ap_shape", "pvp_shape", "mask_shape"]
     with out.open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer = csv.DictWriter(stream, fieldnames=FIELDS)
         writer.writeheader()
-        writer.writerows(results)
+        writer.writerows(rows)
+    cache_file = out.with_name("image_header_cache.json")
+    write_json(cache_file, {
+        "schema": 1,
+        "cases_csv_sha256": hashlib.sha256(cases_csv.read_bytes()).hexdigest(),
+        "patients": headers,
+    })
     summary = {
-        "locked_patients_checked": len(cases), "ready": stats["ready"],
-        "needs_review": stats["needs_review"],
+        "locked_patients_checked": len(cases),
+        "ready": stats["ready"], "needs_review": stats["needs_review"],
         "issue_counts": dict(stats),
-        "out_csv": str(out),
-        "note": "This is an image path/header audit only. REJECT remains eligible for CECT classification; "
-                "anatomical registration and liver-mask semantics require separate image QC.",
+        "out_csv": str(out), "header_cache": str(cache_file),
+        "elapsed_seconds": round(time.monotonic() - started, 2),
+        "workers": workers, "voxel_data_read": False,
+        "note": "Metadata-only shape/affine test, not registration accuracy or voxel-integrity QC. "
+                "REJECT remains in cohort. Mask content and semantics are NOT checked.",
     }
     write_json(out.with_suffix(".json"), summary)
     return summary

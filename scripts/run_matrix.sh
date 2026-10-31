@@ -24,35 +24,35 @@ fi
 export PYTHONPATH="$PROJECT_ROOT/src:${PYTHONPATH:-}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
-MODELS=()
+TARGET_MODELS=()
 if [[ "$MODEL_ARG" == "all" ]]; then
-  MODELS=("dinov2s_mil" "resnet50_mil" "deit_mil")
+  TARGET_MODELS=("dinov2s_mil" "resnet50_mil" "deit_mil")
 else
-  MODELS=("$MODEL_ARG")
+  TARGET_MODELS=("$MODEL_ARG")
 fi
 
-GROUPS=()
+TARGET_GROUPS=()
 if [[ "$GROUP_ARG" == "all" ]]; then
-  GROUPS=("cect_real" "cect_syn" "cect_real_syn" "cect_real_aug")
+  TARGET_GROUPS=("cect_real" "cect_syn" "cect_real_syn" "cect_real_aug")
 else
   # Normalize cect_aug to cect_real_aug
   if [[ "$GROUP_ARG" == "cect_aug" ]]; then
-    GROUPS=("cect_real_aug")
+    TARGET_GROUPS=("cect_real_aug")
   else
-    GROUPS=("$GROUP_ARG")
+    TARGET_GROUPS=("$GROUP_ARG")
   fi
 fi
 
 echo "=========================================================================="
 echo ">> Matrix Training Runner with Auto Test Evaluation"
-echo ">> Models: ${MODELS[*]}"
-echo ">> Groups: ${GROUPS[*]}"
+echo ">> Models: ${TARGET_MODELS[*]}"
+echo ">> Groups: ${TARGET_GROUPS[*]}"
 echo ">> Device: $DEVICE | Epochs: $EPOCHS | Batch Size: $BATCH_SIZE"
 echo ">> Manifest: $MANIFEST"
 echo "=========================================================================="
 
-for M in "${MODELS[@]}"; do
-  for G in "${GROUPS[@]}"; do
+for M in "${TARGET_MODELS[@]}"; do
+  for G in "${TARGET_GROUPS[@]}"; do
     OUT_DIR="$WORK/experiments_mini/${M}/${G}"
     mkdir -p "$OUT_DIR"
 

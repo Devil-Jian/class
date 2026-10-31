@@ -51,15 +51,39 @@ PRIMARY_TO_THREE = {"正常": 0, "肝囊肿": 1, "血管瘤": 1, "HCC": 2, "转�
 
 
 def summarize_three_class(y_true, probabilities, label_map):
-    """Derive normal/benign/malignant from five-disease patient probabilities."""
+    """Derive normal/benign/malignant directly from five-disease patient classification results.
+    
+    Clinical logic:
+    1. A patient's 5-class predicted diagnosis (argmax) is directly mapped to 3-class:
+       - 正常 -> 正常
+       - 肝囊肿, 血管瘤 -> 良性
+       - HCC, 转移瘤 -> 恶性
+    2. Metrics (Accuracy, Balanced Acc, F1, Discrete AUC) reflect whether the model's
+       primary diagnostic decision got the clinical super-category correct.
+    """
     if set(label_map) != set(PRIMARY_TO_THREE):
         return None
     inverse = {int(value): name for name, value in label_map.items()}
-    y = np.asarray([PRIMARY_TO_THREE[inverse[int(k)]] for k in y_true], dtype=int)
-    new_probs = np.zeros((len(probabilities), 3), dtype=float)
+    y_true_3 = np.asarray([PRIMARY_TO_THREE[inverse[int(k)]] for k in y_true], dtype=int)
+    
+    # 1. 直接获取 5 分类的最终预测决策 (argmax)
+    pred_5 = probabilities.argmax(axis=1)
+    # 2. 将最终分类结果直接映射为 3 分类标签 (正常=0, 良性=1, 恶性=2)
+    pred_3 = np.asarray([PRIMARY_TO_THREE[inverse[int(k)]] for k in pred_5], dtype=int)
+    
+    # 3. 构造 3 分类 One-Hot 决策矩阵，直接由分类结果计算指标
+    n_samples = len(y_true)
+    pred_3_one_hot = np.zeros((n_samples, 3), dtype=float)
+    pred_3_one_hot[np.arange(n_samples), pred_3] = 1.0
+    
+    metrics = compute_metrics(y_true_3, pred_3_one_hot, 3)
+    
+    # 保留连续加和概率以供需要时输出三分类概率分布
+    soft_probs = np.zeros((n_samples, 3), dtype=float)
     for name, index in label_map.items():
-        new_probs[:, PRIMARY_TO_THREE[name]] += probabilities[:, int(index)]
-    return compute_metrics(y, new_probs, 3), new_probs
+        soft_probs[:, PRIMARY_TO_THREE[name]] += probabilities[:, int(index)]
+        
+    return metrics, soft_probs
 
 
 def sqrt_class_weights(cases, n_classes, device, cap=3.0):
@@ -216,13 +240,15 @@ def fit(args):
         history.append(row)
 
         auc_str = f"{row['macro_auc']:.4f}" if row.get("macro_auc") is not None else "N/A"
-        three_auc = (row.get("three_class", {}).get("macro_auc"))
+        three_acc = row.get("three_class", {}).get("accuracy")
+        three_acc_str = f"{three_acc:.4f}" if three_acc is not None else "N/A"
+        three_auc = row.get("three_class", {}).get("macro_auc")
         three_str = f"{three_auc:.4f}" if three_auc is not None else "N/A"
         is_best = score > best_score
         marker = " ★ [New Best]" if is_best else ""
         print(f"Epoch {epoch + 1:02d}/{args.epochs:02d} | "
               f"Train Loss: {row['loss']:.4f} | "
-              f"Val Acc: {row['accuracy']:.4f} | "
+              f"Val Acc: {row['accuracy']:.4f} (3-Class: {three_acc_str}) | "
               f"Macro-AUC: {auc_str} | "
               f"3-Class AUC: {three_str}{marker}", flush=True)
 

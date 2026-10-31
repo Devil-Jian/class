@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 from .imaging import read_hu
 from .manifest import read_json, read_jsonl, write_json
@@ -27,7 +28,7 @@ def export_png(manifest, selection, out, syn_index=None, window=(-160.0, 240.0))
     root = Path(out).expanduser().resolve()
     index = {}
     count = Counter()
-    for patient in patients:
+    for patient in tqdm(patients, desc="Exporting PNG slices", dynamic_ncols=True):
         pid = patient["patient_id"]
         if pid not in cases:
             raise ValueError(f"Selection contains missing patient {pid}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 
 from .dataset import PatientBagDataset
 from .manifest import read_jsonl, write_json
@@ -25,7 +26,7 @@ def export_selection(manifest, checkpoint, out, k=16, device="cpu", image_size=N
     selected = []
     with torch.no_grad():
         for split, dataset in by_split.items():
-            for j in range(len(dataset)):
+            for j in tqdm(range(len(dataset)), desc=f"Selecting Top-{k} ({split})", dynamic_ncols=True):
                 row = dataset[j]
                 output = model(row["ap"][None].to(device), row["pvp"][None].to(device))
                 scores = output["attention_scores"][0].cpu().tolist()

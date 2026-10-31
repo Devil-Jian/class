@@ -34,6 +34,7 @@ class PatientBagDataset(Dataset):
         self.selected = {r["patient_id"]: r for r in read_json(selection)} if selection else {}
         self.syn_index = read_json(syn_index) if syn_index else {}
         self.png_index = read_json(png_index) if png_index else {}
+        self.png_dir = Path(png_index).resolve().parent if png_index else None
         if any(r["patient_id"] not in self.selected for r in self.cases) and mode == "selected":
             raise ValueError("Selection missing patients in split")
         if group in {"cect_syn", "cect_real_syn"} and not (syn_index or png_index):
@@ -74,7 +75,17 @@ class PatientBagDataset(Dataset):
             key = f"{patient}|{ref}|{source}|{phase}"
             if key not in self.png_index:
                 raise KeyError(f"PNG index missing {key}: run export-png with all required sources")
-            with Image.open(self.png_index[key]) as im:
+            img_path = Path(self.png_index[key])
+            if not img_path.is_file() and self.png_dir:
+                parts = img_path.parts
+                for anchor in ("real", "syn_stage1", "syn_stage2", "syn"):
+                    if anchor in parts:
+                        idx = parts.index(anchor)
+                        cand = self.png_dir / Path(*parts[idx:])
+                        if cand.is_file():
+                            img_path = cand
+                            break
+            with Image.open(img_path) as im:
                 array = np.asarray(im.convert("L"), dtype=np.float32) / 255.0
             x = torch.from_numpy(np.ascontiguousarray(array))[None, None]
             return F.interpolate(x, (self.image_size, self.image_size),

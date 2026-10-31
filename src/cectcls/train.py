@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from .dataset import PatientBagDataset, BalancedSourceSampler, collate_bags
 from .manifest import read_json, write_json
@@ -70,13 +72,15 @@ def sqrt_class_weights(cases, n_classes, device, cap=3.0):
     return torch.as_tensor(weights, dtype=torch.float32, device=device)
 
 
-def evaluate_model(model, loader, device, n_classes, return_predictions=False, label_map=None):
+def evaluate_model(model, loader, device, n_classes, return_predictions=False, label_map=None, desc=None):
     model.eval()
     ys, probs, records = [], [], []
+    loader_iter = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False) if desc else loader
     with torch.no_grad():
-        for batch in loader:
-            outputs = model(batch["ap"].to(device), batch["pvp"].to(device),
-                            batch["valid_mask"].to(device))
+        for batch in loader_iter:
+            outputs = model(batch["ap"].to(device, non_blocking=True),
+                            batch["pvp"].to(device, non_blocking=True),
+                            batch["valid_mask"].to(device, non_blocking=True))
             probability = torch.softmax(outputs["logits"], dim=1).cpu().numpy()
             ys.extend(batch["label"].tolist())
             probs.extend(probability.tolist())
@@ -106,27 +110,55 @@ def make_loader(args, split, group, mode, shuffle=False):
         seed=args.seed, image_size=args.image_size,
         uniform=args.uniform, random_count=args.random_count,
     )
+    mix_mode = getattr(args, "mix_mode", "full")
     source_sampler = (
         BalancedSourceSampler(dataset, seed=args.seed)
-        if shuffle and mode == "selected" and group in {"cect_real_aug", "cect_real_syn"}
+        if shuffle and mode == "selected" and group in {"cect_real_aug", "cect_real_syn"} and mix_mode == "balanced"
         else None
     )
-    loader = DataLoader(dataset, batch_size=args.batch_size,
-                        shuffle=shuffle and source_sampler is None, sampler=source_sampler,
-                        num_workers=args.workers, collate_fn=collate_bags)
+    loader_kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": shuffle and source_sampler is None,
+        "sampler": source_sampler,
+        "num_workers": args.workers,
+        "collate_fn": collate_bags,
+        "pin_memory": (args.device != "cpu" and torch.cuda.is_available()),
+    }
+    if args.workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    loader = DataLoader(dataset, **loader_kwargs)
     return dataset, loader
 
 
 def fit(args):
     seed_everything(args.seed)
+    if getattr(args, "png_index", None) and os.path.isfile(args.png_index):
+        print(f">> [DataLoader] Using PNG dataset from {args.png_index} (Zero-I/O Fast Mode)")
+    else:
+        h5_root = os.environ.get("H5_ROOT", "").strip()
+        if not h5_root and os.path.isdir("/dataset/h5_cache"):
+            h5_root = "/dataset/h5_cache"
+            os.environ["H5_ROOT"] = h5_root
+        if h5_root and os.path.isdir(h5_root):
+            print(f">> [DataLoader] Using H5 cache at {h5_root} (High-Speed I/O Mode enabled)")
+        else:
+            print(f">> [DataLoader] Reading raw NIfTI files.")
     labels = read_json(args.labels)
     n_classes = len(labels)
     if n_classes < 2:
         raise ValueError("Classification requires >=2 classes")
+    print(f">> [Experiment] Model: {args.model} | Group: {args.group} | Output: {args.out}")
     if args.stage == "selection" and args.group != "cect_real":
         raise ValueError("The selection MIL must be trained on real AP/PVP only")
     mode = "mixed" if args.stage == "selection" else "selected"
     train_set, train_loader = make_loader(args, "train", args.group, mode, shuffle=True)
+    if args.group in {"cect_real_syn", "cect_real_aug"}:
+        mix_mode = getattr(args, "mix_mode", "full")
+        if mix_mode == "full":
+            print(f">> [Dataset] 1:1 Full Mixture Mode: {len(train_set)} samples/epoch ({len(train_set.cases)} Real + {len(train_set.cases)} {args.group.split('_')[-1].upper()})")
+        else:
+            print(f">> [Dataset] 50/50 Subsampled Balanced Mode: {len(train_set.cases)} samples/epoch")
     class_weight_mode = getattr(args, "class_weight", "sqrt")
     if class_weight_mode not in {"sqrt", "none"}:
         raise ValueError("class_weight must be sqrt or none")
@@ -152,31 +184,49 @@ def fit(args):
         train_set.set_epoch(epoch)
         model.train()
         total_loss, examples = 0., 0
+        train_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1:02d}/{args.epochs:02d} [Train]",
+                         dynamic_ncols=True, leave=False)
         with sampling_log.open("a" if epoch else "w", encoding="utf-8") as log:
-            for batch in train_loader:
+            for batch in train_bar:
                 optimizer.zero_grad(set_to_none=True)
-                outputs = model(batch["ap"].to(args.device), batch["pvp"].to(args.device),
-                                batch["valid_mask"].to(args.device))
-                labels_batch = batch["label"].to(args.device)
+                outputs = model(batch["ap"].to(args.device, non_blocking=True),
+                                batch["pvp"].to(args.device, non_blocking=True),
+                                batch["valid_mask"].to(args.device, non_blocking=True))
+                labels_batch = batch["label"].to(args.device, non_blocking=True)
                 loss = F.cross_entropy(outputs["logits"], labels_batch, weight=weights)
                 loss.backward()
                 optimizer.step()
-                total_loss += float(loss.item()) * len(labels_batch)
+                batch_loss = float(loss.item())
+                total_loss += batch_loss * len(labels_batch)
                 examples += len(labels_batch)
+                train_bar.set_postfix({"loss": f"{batch_loss:.4f}",
+                                       "avg_loss": f"{total_loss / max(1, examples):.4f}"})
                 for rec in batch["records"]:
                     log.write(json.dumps({"epoch": epoch, "patient_id": rec["patient_id"],
                                           "source": rec["source"],
                                           "selected_ap_ids": rec["ap_slice_ids"],
                                           "selected_pvp_ids": rec["pvp_slice_ids"],
                                           "sampling": rec["sampling"]}, ensure_ascii=False) + "\n")
-        val_metrics = evaluate_model(model, val_loader, args.device, n_classes, label_map=labels)
+        val_metrics = evaluate_model(model, val_loader, args.device, n_classes, label_map=labels,
+                                     desc=f"Epoch {epoch + 1:02d}/{args.epochs:02d} [Val]")
         score = val_metrics["macro_auc"]
         if score is None or not math.isfinite(score):
             score = val_metrics["macro_f1"]
         row = {"epoch": epoch, "loss": total_loss / max(1, examples), **val_metrics}
         history.append(row)
-        print(json.dumps(row, ensure_ascii=False), flush=True)
-        if score > best_score:
+
+        auc_str = f"{row['macro_auc']:.4f}" if row.get("macro_auc") is not None else "N/A"
+        three_auc = (row.get("three_class", {}).get("macro_auc"))
+        three_str = f"{three_auc:.4f}" if three_auc is not None else "N/A"
+        is_best = score > best_score
+        marker = " ★ [New Best]" if is_best else ""
+        print(f"Epoch {epoch + 1:02d}/{args.epochs:02d} | "
+              f"Train Loss: {row['loss']:.4f} | "
+              f"Val Acc: {row['accuracy']:.4f} | "
+              f"Macro-AUC: {auc_str} | "
+              f"3-Class AUC: {three_str}{marker}", flush=True)
+
+        if is_best:
             best_score = score
             ckpt = {
                 "state_dict": model.state_dict(), "model_name": args.model,
@@ -215,7 +265,8 @@ def evaluate_checkpoint(args):
     _, loader = make_loader(args, args.split, group, mode)
     metrics, predictions = evaluate_model(model, loader, args.device,
                                            state["num_classes"], return_predictions=True,
-                                           label_map=state.get("label_map"))
+                                           label_map=state.get("label_map"),
+                                           desc=f"Evaluating [{args.split}]")
     write_json(args.out, {"checkpoint": str(args.checkpoint), "split": args.split,
                           "evaluation_group": group, "metrics": metrics,
                           "predictions": predictions})

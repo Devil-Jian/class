@@ -4,9 +4,10 @@ import torch
 from cectcls.models import DualPhaseMIL
 
 
+@pytest.mark.parametrize("model_name", ["resnet18_mil", "resnet50_mil"])
 @pytest.mark.parametrize("phase", ["dual", "ncct"])
-def test_resnet_mil_shapes_and_padding(phase):
-    model = DualPhaseMIL("resnet18_mil", num_classes=4, phase_mode=phase,
+def test_resnet_mil_shapes_and_padding(model_name, phase):
+    model = DualPhaseMIL(model_name, num_classes=4, phase_mode=phase,
                          pretrained=False, encode_chunk=3).eval()
     ap, pvp = torch.rand(2, 3, 1, 64, 64), torch.rand(2, 3, 1, 64, 64)
     mask = torch.tensor([[True, True, False], [True, True, True]])

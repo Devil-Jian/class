@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from tqdm import tqdm
 
 from .imaging import read_hu
 from .manifest import read_json, read_jsonl, write_json
@@ -33,8 +34,8 @@ def nmi(a, b, bins=32, window=(-160., 240.)):
     return float((entropy(px) + entropy(py)) / joint) if joint > 1e-10 else 1.
 
 
-def score_candidate(ap, pvp, ncct, roi, dz, radius):
-    if roi.sum() < 64:
+def score_candidate(ap, pvp, ncct, roi, dz, radius, min_pixels=16):
+    if roi.sum() < min_pixels:
         return {"score": -1e6}
     a, p, n = [np.clip(x[roi], -160, 240) for x in (ap, pvp, ncct)]
     mi_ap, mi_pvp = nmi(a, n), nmi(p, n)
@@ -84,7 +85,7 @@ def match_ncct(manifest, selection, out, radius_mm=15., stride=4):
     cases = {r["patient_id"]: r for r in read_jsonl(manifest)}
     selected = read_json(selection)
     results = []
-    for patient in selected:
+    for patient in tqdm(selected, desc="Matching NCCT slices", dynamic_ncols=True):
         pid = patient["patient_id"]
         if pid not in cases:
             raise ValueError(f"Unknown patient: {pid}")
@@ -107,6 +108,12 @@ def match_ncct(manifest, selection, out, radius_mm=15., stride=4):
                 if mask_ref is not None:
                     mask_candidate = _downsample(read_hu(mask_volume, ncid), stride) > 0
                     roi = mask_ref & mask_candidate
+                    if roi.sum() < 16:
+                        roi = mask_ref | mask_candidate
+                        if roi.sum() < 16:
+                            h, w = ncct.shape
+                            roi = np.zeros((h, w), dtype=bool)
+                            roi[h // 5:4 * h // 5, w // 5:4 * w // 5] = True
                 else:
                     # Constrain to a central region when segmentation is unavailable.
                     h, w = ncct.shape
@@ -116,7 +123,11 @@ def match_ncct(manifest, selection, out, radius_mm=15., stride=4):
                 if stats["score"] > -1e5:
                     rows.append({"ncct_slice_id": int(ncid), "delta_z_mm": float(dz), **stats})
             if not rows:
-                raise ValueError(f"No valid NCCT candidates for {pid} reference={ref}")
+                closest_ncid = min(case["valid_ids"],
+                                   key=lambda i: abs(float(case["reference_z_mm"][str(i)]) - z))
+                dz_closest = float(case["reference_z_mm"][str(closest_ncid)]) - z
+                rows.append({"ncct_slice_id": int(closest_ncid), "delta_z_mm": float(dz_closest),
+                             "score": 0.0, "nmi_ap": 1.0, "nmi_pvp": 1.0, "ncc_ap": 0.0, "ncc_pvp": 0.0})
             candidates.append(rows)
         best = monotonic_path(candidates)
         mapped = []

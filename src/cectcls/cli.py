@@ -29,7 +29,7 @@ def _training_options(parser, include_stage=True):
     parser.add_argument("--group", default="cect_real",
                         choices=["ncct", "cect_real", "cect_syn", "cect_real_aug", "cect_real_syn"])
     parser.add_argument("--model", default="dinov2s_mil",
-                        choices=["resnet18_mil", "deit_mil", "dinov2s_mil"])
+                        choices=["resnet18_mil", "resnet18", "resnet50_mil", "resnet50", "deit_mil", "deit", "dinov2s_mil", "dinov2"])
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--freeze-encoder", action="store_true")
     parser.add_argument("--encode-chunk", type=int, default=16)
@@ -41,6 +41,8 @@ def _training_options(parser, include_stage=True):
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--class-weight", choices=["sqrt", "none"], default="sqrt")
+    parser.add_argument("--mix-mode", choices=["full", "balanced"], default="full",
+                        help="Mixing strategy for cect_real_syn / cect_real_aug: 'full' for 1:1 all 1674 samples/epoch (default), 'balanced' for 50/50 subsampling (837 samples/epoch)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

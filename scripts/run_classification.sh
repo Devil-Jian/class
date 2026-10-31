@@ -24,9 +24,26 @@ DEVICE="${DEVICE:-cuda}"
 SELECTION_EPOCHS="${SELECTION_EPOCHS:-30}"
 EXPERIMENT_EPOCHS="${EXPERIMENT_EPOCHS:-30}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
-WORKERS="${WORKERS:-0}"
+WORKERS="${WORKERS:-2}"
 QC_WORKERS="${QC_WORKERS:-2}"
 mkdir -p "$WORK" "$INPUT_DIR"
+
+if [[ -f "$WORK/png_dataset/png_index.json" ]]; then
+  PNG_INDEX="${PNG_INDEX:-$WORK/png_dataset/png_index.json}"
+else
+  PNG_INDEX="${PNG_INDEX:-$WORK/png/png_index.json}"
+fi
+
+# Auto-detect or verify H5 cache
+if [[ -z "${H5_ROOT:-}" && -d "/dataset/h5_cache" ]]; then
+  export H5_ROOT="/dataset/h5_cache"
+fi
+
+if [[ -n "${H5_ROOT:-}" && -d "$H5_ROOT" ]]; then
+  echo ">> Auto-detected H5 cache at $H5_ROOT (High-Speed I/O Mode enabled)"
+else
+  echo ">> [Notice] H5_ROOT not detected or not a directory (checked: ${H5_ROOT:-/dataset/h5_cache}). Reading raw NIfTI files from $INPUT_ROOT"
+fi
 
 PRETRAINED=()
 if [[ "${USE_PRETRAINED:-1}" == "1" ]]; then PRETRAINED=(--pretrained); fi
@@ -110,7 +127,7 @@ PY
     cectcls train "${COMMON[@]}" \
       --stage selection --group cect_real --model dinov2s_mil \
       --uniform 16 --random-count 16 \
-      --epochs "$SELECTION_EPOCHS" --encode-chunk 8 \
+      --epochs "$SELECTION_EPOCHS" --encode-chunk "${ENCODE_CHUNK:-16}" \
       --out "$WORK/selection"
     ;;
   top16)
@@ -137,6 +154,20 @@ PY
     echo "STOP: call your separate NCCT->CECT generator using the requests JSON."
     echo "The generator must write each 2D HU .npy output_path before register-syn."
     ;;
+  syn-png)
+    overwrite_flag=()
+    if [[ "${OVERWRITE:-0}" == "1" ]]; then overwrite_flag=(--overwrite); fi
+    python "$PROJECT_ROOT/scripts/generate_targeted_syn_png.py" \
+      --matched "$WORK/manifests/matched_bags.json" \
+      --manifest "$WORK/manifests/cases.jsonl" \
+      --h5-root "${H5_ROOT:-/dataset/h5_cache}" \
+      --output-dir "$WORK/png_dataset" \
+      --split "${SYN_SPLIT:-train}" \
+      --batch-size "${BATCH_SIZE:-4}" \
+      --device "${DEVICE:-auto}" \
+      --flip "${FLIP:-both}" \
+      "${overwrite_flag[@]}"
+    ;;
   register-syn)
     cectcls register-syn \
       --requests "$WORK/manifests/synthetic_requests.json" \
@@ -153,7 +184,7 @@ PY
     cectcls train "${COMMON[@]}" \
       --stage selected \
       --selection "$WORK/manifests/matched_bags.json" \
-      --png-index "$WORK/png/png_index.json" \
+      --png-index "$PNG_INDEX" \
       --model resnet18_mil --group cect_real \
       --epochs 2 --out "$WORK/experiments/smoke_real"
     ;;
@@ -161,7 +192,7 @@ PY
     cectcls train-grid "${COMMON[@]}" \
       --stage selected \
       --selection "$WORK/manifests/matched_bags.json" \
-      --png-index "$WORK/png/png_index.json" \
+      --png-index "$PNG_INDEX" \
       --epochs "$EXPERIMENT_EPOCHS" --encode-chunk 8 \
       --out "$WORK/experiments"
     ;;
@@ -171,7 +202,7 @@ PY
         target="$WORK/experiments/$model/$group"
         cectcls evaluate "${COMMON[@]}" \
           --selection "$WORK/manifests/matched_bags.json" \
-          --png-index "$WORK/png/png_index.json" \
+          --png-index "$PNG_INDEX" \
           --checkpoint "$target/best.pt" --split test \
           --out "$target/test.json"
       done
@@ -182,7 +213,7 @@ PY
 Usage: cd /workspace/class && bash scripts/run_classification.sh STAGE
 
 STAGEs: prune-qc, qc, prepare, train-selector, top16, match, request-syn,
-        register-syn, export-png, smoke, train-grid, evaluate
+        syn-png, register-syn, export-png, smoke, train-grid, evaluate
 
 PROJECT_ROOT (code/light files): $PROJECT_ROOT
 INPUT_ROOT (only scan location): $INPUT_ROOT

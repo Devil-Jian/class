@@ -8,8 +8,13 @@ import timm
 
 MODEL_NAMES = {
     "resnet18_mil": "resnet18",
+    "resnet18": "resnet18",
+    "resnet50_mil": "resnet50",
+    "resnet50": "resnet50",
     "deit_mil": "deit_small_patch16_224",
+    "deit": "deit_small_patch16_224",
     "dinov2s_mil": "vit_small_patch14_dinov2.lvd142m",
+    "dinov2": "vit_small_patch14_dinov2.lvd142m",
 }
 
 
@@ -35,7 +40,7 @@ class DualPhaseMIL(nn.Module):
         self.register_buffer("imagenet_mean", torch.tensor([0.485, 0.456, 0.406])[None, :, None, None], persistent=False)
         self.register_buffer("imagenet_std", torch.tensor([0.229, 0.224, 0.225])[None, :, None, None], persistent=False)
         model_args = {"pretrained": pretrained, "num_classes": 0}
-        if model_name != "resnet18_mil":
+        if model_name not in {"resnet18_mil", "resnet18", "resnet50_mil", "resnet50"}:
             model_args["img_size"] = self.image_size
         self.encoder = timm.create_model(MODEL_NAMES[model_name], **model_args)
         feature_dim = self.encoder.num_features

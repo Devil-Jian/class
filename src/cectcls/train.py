@@ -268,6 +268,29 @@ def fit(args):
             torch.save(ckpt, out / "best.pt")
             write_json(out / "best_val.json", row)
     write_json(out / "history.json", history)
+
+    best_path = out / "best.pt"
+    if best_path.exists():
+        try:
+            import copy
+            test_args = copy.copy(args)
+            test_args.checkpoint = best_path
+            test_args.split = "test"
+            test_args.out = out / "test_results.json"
+            print(f"\n>> [Evaluation] Automatically evaluating best model on [TEST] split...")
+            test_metrics = evaluate_checkpoint(test_args)
+            t_acc = test_metrics["accuracy"]
+            t_3acc = test_metrics.get("three_class", {}).get("accuracy")
+            t_3acc_str = f"{t_3acc:.4f}" if t_3acc is not None else "N/A"
+            t_auc = test_metrics.get("macro_auc")
+            t_auc_str = f"{t_auc:.4f}" if t_auc is not None else "N/A"
+            t_3auc = test_metrics.get("three_class", {}).get("macro_auc")
+            t_3auc_str = f"{t_3auc:.4f}" if t_3auc is not None else "N/A"
+            print(f">> [TEST RESULTS] Acc: {t_acc:.4f} (3-Class: {t_3acc_str}) | "
+                  f"Macro-AUC: {t_auc_str} | 3-Class AUC: {t_3auc_str}\n", flush=True)
+        except Exception as e:
+            print(f">> [Evaluation Warning] Automatic test evaluation skipped: {e}\n", flush=True)
+
     return out / "best.pt"
 
 

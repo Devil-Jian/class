@@ -1,0 +1,9 @@
+Backbone,Training Regime,Macro-AUC,3-Class AUC,Accuracy,Balanced Acc,Macro-F1,3-Class Acc
+DINOv2-S,cect_real,0.7092,0.6528,0.4857,0.4857,0.4305,0.5429
+DINOv2-S,cect_syn,0.6857,0.5805,0.4,0.4,0.3895,0.4286
+DINOv2-S,cect_real_syn,0.7347,0.7137,0.4286,0.4286,0.4011,0.5429
+DINOv2-S,cect_real_aug,0.7194,0.7018,0.4286,0.4286,0.387,0.5714
+DeiT-S,cect_real,0.6673,0.5754,0.3429,0.3429,0.3343,0.4571
+DeiT-S,cect_syn,0.6806,0.6151,0.3714,0.3714,0.3504,0.5429
+DeiT-S,cect_real_syn,0.6765,0.6091,0.3143,0.3143,0.3128,0.5143
+DeiT-S,cect_real_aug,0.6724,0.5873,0.3714,0.3714,0.3883,0.4571

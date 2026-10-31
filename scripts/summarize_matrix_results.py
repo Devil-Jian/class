@@ -43,7 +43,10 @@ def summarize_matrix(work_dir="/dataset/downstream_classification/experiments_mi
     print("\n" + "=" * 80)
     print(">> Matrix Experiment Test Results Summary Table")
     print("=" * 80)
-    print(df.to_markdown(index=False))
+    try:
+        print(df.to_markdown(index=False))
+    except ImportError:
+        print(df.to_string(index=False))
     print("=" * 80)
 
 if __name__ == "__main__":

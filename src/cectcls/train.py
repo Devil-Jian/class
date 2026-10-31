@@ -310,7 +310,7 @@ def load_checkpoint(path, device):
 def evaluate_checkpoint(args):
     model, state = load_checkpoint(args.checkpoint, args.device)
     group = "ncct" if state["phase_mode"] == "ncct" else "cect_real"
-    mode = "selected" if state["stage"] == "selected" else "mixed"
+    mode = "selected" if (state.get("stage") == "selected" and getattr(args, "selection", None)) else "mixed"
     _, loader = make_loader(args, args.split, group, mode)
     metrics, predictions = evaluate_model(model, loader, args.device,
                                            state["num_classes"], return_predictions=True,

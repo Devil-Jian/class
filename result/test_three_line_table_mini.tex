@@ -1,0 +1,21 @@
+% --- Standard Academic Three-line Table (LaTeX booktabs format) ---
+\begin{table*}[t]
+\centering
+\caption{Test performance comparison across backbones and multi-phase CECT data regimes ($N=35$, Balanced Mini cohort).}
+\label{tab:test_cect_results_mini}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Backbone} & \textbf{Training Regime} & \textbf{Macro-AUC} & \textbf{3-Class AUC} & \textbf{Accuracy} & \textbf{Balanced Acc} & \textbf{Macro-F1} \\
+\midrule
+\multirow{4}{*}{DINOv2-S} & \texttt{cect\_real}       & 0.5959 & 0.4841 & 0.1714 & 0.1714 & 0.0896 \\
+                          & \texttt{cect\_syn}        & 0.4837 & 0.4306 & 0.1429 & 0.1429 & 0.1087 \\
+                          & \texttt{cect\_real\_syn}  & 0.5500 & 0.4008 & 0.1429 & 0.1429 & 0.1478 \\
+                          & \texttt{cect\_real\_aug}  & \textbf{0.6337} & \textbf{0.6448} & \textbf{0.4000} & \textbf{0.4000} & \textbf{0.3308} \\
+\midrule
+\multirow{4}{*}{DeiT-S}   & \texttt{cect\_real}       & 0.6418 & 0.5298 & 0.2571 & 0.2571 & 0.2026 \\
+                          & \texttt{cect\_syn}        & 0.5745 & 0.5516 & 0.2286 & 0.2286 & 0.2211 \\
+                          & \texttt{cect\_real\_syn}  & 0.6286 & 0.5476 & 0.2571 & 0.2571 & 0.1917 \\
+                          & \texttt{cect\_real\_aug}  & \textbf{0.6469} & \textbf{0.5675} & \textbf{0.2857} & \textbf{0.2857} & \textbf{0.2512} \\
+\bottomrule
+\end{tabular}
+\end{table*}

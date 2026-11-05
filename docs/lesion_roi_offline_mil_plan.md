@@ -38,7 +38,7 @@ Keep the current `cectcls` pipeline executable and unchanged unless a backward-c
 ### 3.2 Patient bag
 - One bag per patient and image regime (not one folder per patch).
 - Instances: unique lesion identifier, source image, phase, z index and physical z, bbox in original pixel coordinates, confidence, ROI kind (`lesion` or `liver_background`), detector/model hash, extraction settings.
-- Preset V1 defaults (tune on development folds only): bbox expansion 20%, minimum 96-pixel ROI, up to 32 instances/patient, preserve all lesions by stratifying available slices, optional background liver ROIs for **both** tumor and normal cohorts.
+- Preset V1 defaults (tune on training/validation patients only): bbox expansion 20%, minimum 96-pixel ROI, up to 32 instances/patient, preserve all lesions by stratifying available slices, optional background liver ROIs for **both** tumor and normal cohorts.
 - **Normal/zero-detection cases** must still have usable liver-parenchyma instances; no empty bag or trivial has-detection shortcut. Record false-negative/zero-detection rates.
 - AP/PVP matching: use verified registration or lesion-level match with explicit QC. Same pixel coordinates are **not** assumed equivalent if phase geometry differs.
 - For controlled REAL–SYN experiments, use a *fixed Real-derived ROI manifest* mapped into each image domain so image type does not change which lesion was sampled. Document this as an ROI-controlled analysis, not end-to-end detection.
@@ -66,7 +66,7 @@ For each encoder, benchmark **frozen pretrained** vs **REAL patient-level MIL-su
 
 - Stage A: only training patients from the fixed training split, REAL AP/PVP ROI bag, dual-phase gated-MIL head; optimize patient-level labels. Freeze/full or partial unfreeze controls by architecture (ResNet18: candidate full; DeiT-Tiny: staged unfreeze/full; DINOv2: final 2–4 blocks, optionally LoRA later). Explicitly test `model.eval()` for frozen encoders and restore training mode only where appropriate.
 - Choose training epoch/hyperparameters using the validation patients only; retain the chosen encoder **without the temporary MIL head**.
-- Stage B: freeze the encoder; extract all required train/validation/test REAL/SYN/AUG image features **for that fold**.
+- Stage B: freeze the encoder; extract all required train/validation/test REAL/SYN/AUG image features **for the fixed split**.
 - Stage C: train a **fresh** offline-MIL head per regime and seed using the corresponding cached features.
 - Pretrained-only + SYN-MIL is a separate control if making claims about performance without real-label supervision. A REAL-adapted encoder used in SYN-MIL is **not** a SYN-only end-to-end classifier.
 
@@ -89,10 +89,10 @@ For each encoder, benchmark **frozen pretrained** vs **REAL patient-level MIL-su
 ## 6. Fixed split, leakage controls and statistics
 
 **Mandatory:**
-- Patient-level stratified fixed-split CV; all visits, phases, real/synthetic counterparts, augmentation variants and ROIs for each patient remain in one fold. Guard against duplicate raw patient IDs spanning centers.
-- Encoder fine-tuning, MIL head fitting, normalization statistics and hyperparameter search use training patients only, with validation used for model selection. Held-out test fold is evaluated **once**.
-- Upstream detector: if trained using tumor labels from the same evaluation cohort, produce out-of-fold detector predictions for validation/test patients; otherwise use an independent externally trained detector. Document detector train IDs and assert no leakage.
-- If a held-out external test center exists, never use it for encoder/detector/MIL training, selection, or threshold tuning. Training/validation and external testing are separate from inner CV.
+- Use one locked, patient-level train/val/test split; all visits, phases, real/synthetic counterparts, augmentation variants and ROIs for each patient must remain in the same split. Guard against duplicate raw patient IDs spanning centers.
+- Encoder fine-tuning, MIL head fitting, normalization statistics and hyperparameter search use training patients only, with validation used for model selection. The held-out test set is evaluated **once**.
+- Upstream detector: if trained using tumor labels from the same evaluation cohort, produce leakage-safe detector predictions on validation/test patients (detector trained without their lesion annotations); otherwise use an independent externally trained detector. Document detector train IDs and assert no leakage.
+- If a held-out external test center exists, never use it for encoder/detector/MIL training, selection, or threshold tuning. Training/validation must remain separate from external testing.
 - Real and synthetic data from the same patient cannot cross splits; no manual lesion annotations provided as model inference inputs for the primary test.
 - No selecting Top-K with a model trained on held-out patient labels.
 - A fair frozen-encoder comparison must report the extra REAL-supervised encoder adaptation stage.
@@ -140,20 +140,20 @@ outputs/lesion_mil_v1/
     split_integrity.json
 ```
 
-Source-view feature HDF5 (one patient per encoder/fold/source view; each of the four datasets references one or more source views):
+Source-view feature HDF5 (one patient per encoder/source view; each of the four datasets references one or more source views):
 
 - `ap_features: [N,D]`, `pvp_features: [N,D]` (both float16 on disk; float32 in MIL).
 - `slice_ids: [N]`, `lesion_ids: [N]`, `roi_types: [N]`, `ap_boxes: [N,4]`, `pvp_boxes: [N,4]`.
 - `meta` serialized JSON with patient/source/label/split, geometry, ROI/detector hash, encoder name/checkpoint SHA256, window/normalization/resize, augmentation seed, input checksum, software version.
 - If a phase has unmatched ROIs, fail or use an explicitly tested missing-phase fusion path; never fabricate a matching counterpart.
-- Cache keys include fold, encoder checkpoint hash, ROI manifest hash, regime and transform/augmentation recipe to avoid silent stale-cache reuse.
+- Cache keys include split version, encoder checkpoint hash, ROI manifest hash, regime and transform/augmentation recipe to avoid silent stale-cache reuse.
 
 ## 8. Implementation phases and acceptance criteria
 
 ### P0 — Contracts and tests (first)
 **Files:** `src/cectcls/offline/contracts.py`, `src/cectcls/offline/validation.py`, tests.
 
-- Define versioned patient/instance/feature schemas, fold manifest and strict input validation.
+- Define versioned patient/instance/feature schemas, fixed-split manifest and strict input validation.
 - Implement zero-duplicate ID check, patient split integrity, ROI bounds/phase matching, checksum validation.
 - Acceptance: small synthetic fixtures cover missing CT, missing SYN, empty detection, mismatched geometry, wrong class labels, duplicate IDs, test leakage.
 
@@ -210,5 +210,5 @@ python scripts/run_offline_matrix.py --config configs/lesion_mil_v1.yaml --pilot
 - Disease label sets (five-class vs three-class vs extended six-class) remain dataset configuration, never inferred from folder names.
 - No promised performance threshold or claim that LFM/REAL_AUG/SYN must outperform baseline.
 - Do not treat detector-conditioned ROI MIL as fully end-to-end classification at inference unless the detector is actually run on evaluation scans.
-- Confirm detector prediction file schema, source REAL/SYN registration details and the authoritative cohort/folds before integrating production data. Provide adapters rather than hardcoding private local paths.
+- Confirm detector prediction file schema, source REAL/SYN registration details and the authoritative cohort/split before integrating production data. Provide adapters rather than hardcoding private local paths.
 - **First deliverable of this branch is this plan**; P0–P5 are implementation follow-ups.

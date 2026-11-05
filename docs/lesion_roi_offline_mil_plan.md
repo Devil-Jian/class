@@ -70,14 +70,16 @@ For each encoder, benchmark **frozen pretrained** vs **REAL patient-level MIL-su
 - Stage C: train a **fresh** offline-MIL head per regime and seed using the corresponding cached features.
 - Pretrained-only + SYN-MIL is a separate control if making claims about performance without real-label supervision. A REAL-adapted encoder used in SYN-MIL is **not** a SYN-only end-to-end classifier.
 
-## 5. Four downstream data regimes
+## 5. Four independently addressable offline feature datasets
 
-| Regime | Training view(s) | Fixed evaluation |
-|---|---|---|
-| REAL | one REAL view per patient | REAL val/test |
-| SYN | one SYN view per patient | REAL val/test |
-| REAL_AUG | REAL + one deterministic independently augmented REAL view | REAL val/test |
-| REAL_SYN | REAL + SYN views of the same patient | REAL val/test |
+| Dataset ID | Patient-level feature-bag content | Source images | Fixed evaluation |
+|---|---|---|---|
+| `real` | One REAL AP/PVP bag per patient | Real CECT | REAL val/test |
+| `syn` | One SYN AP/PVP bag per patient | Synthetic CECT | REAL val/test |
+| `real_aug` | REAL and independently image-augmented REAL bags for each patient | Real CECT + seeded augmentations | REAL val/test |
+| `real_syn` | REAL and SYN bags for each patient | Real CECT + matched synthetic CECT | REAL val/test |
+
+**Binding requirement:** these are FOUR named, separately indexed datasets, not just four MIL runtime switches. Each dataset MUST be materialized as a complete `dataset_manifest.jsonl` of patient/view-to-feature references and validated independently. `real_aug` and `real_syn` contain multiple views of the same patient under the SAME patient label; the MIL training loader can sample views in balanced or full mode. They are not new patients and must not be treated as independent patient-level observations. Source feature tensors may be deduplicated on disk using immutable references, but each of the four dataset manifests must be standalone usable with explicit path resolution and checksums.
 
 - Data views must not change underlying patient counts or fold assignments.
 - Two mixture schedules: **balanced** (one view per patient/epoch, deterministic alternating or seeded sampling) as the primary controlled experiment, and **full** (both views, doubled training inputs) as sensitivity analysis.
@@ -112,7 +114,19 @@ outputs/lesion_mil_v1/
     fold_{k}/{encoder}/best_encoder.safetensors
     fold_{k}/{encoder}/finetune_metrics.json
   features/
-    fold_{k}/{encoder}/{regime}/{patient_id}.h5
+    fold_{k}/{encoder}/
+      base_real/{patient_id}.h5
+      base_syn/{patient_id}.h5
+      base_real_aug/{patient_id}_seed_{seed}.h5
+      datasets/
+        real/dataset_manifest.jsonl
+        syn/dataset_manifest.jsonl
+        real_aug/dataset_manifest.jsonl
+        real_syn/dataset_manifest.jsonl
+        real/dataset_qc.json
+        syn/dataset_qc.json
+        real_aug/dataset_qc.json
+        real_syn/dataset_qc.json
   mil/
     fold_{k}/{encoder}/{regime}/{seed}/best.pt
     fold_{k}/{encoder}/{regime}/{seed}/predictions.jsonl
@@ -126,7 +140,7 @@ outputs/lesion_mil_v1/
     split_integrity.json
 ```
 
-Feature HDF5 (one patient per encoder/fold/regime):
+Source-view feature HDF5 (one patient per encoder/fold/source view; each of the four datasets references one or more source views):
 
 - `ap_features: [N,D]`, `pvp_features: [N,D]` (both float16 on disk; float32 in MIL).
 - `slice_ids: [N]`, `lesion_ids: [N]`, `roi_types: [N]`, `ap_boxes: [N,4]`, `pvp_boxes: [N,4]`.
@@ -160,14 +174,14 @@ Feature HDF5 (one patient per encoder/fold/regime):
 ### P3 — Frozen offline features
 **Files:** `offline/features.py`, `scripts/extract_offline_features.py`.
 
-- Extract feature tensors for REAL, SYN, REAL_AUG, REAL_SYN. Store REAL and SYN base features once and reference them in mix manifests when practical (avoid duplicate bytes). Store seeded augmentation cache separately.
-- Acceptance: cached [N,D] features match online frozen encoder output within tolerance; two phases aligned; hash checks prevent wrong checkpoints/transform reuse; resumes after interruption.
+- Construct four explicit offline feature datasets: `real`, `syn`, `real_aug`, `real_syn`. For EACH dataset emit its own complete `dataset_manifest.jsonl` and QC report. Extract REAL, SYN, and seeded image-augmented REAL features with frozen fold-specific encoders. `real_aug` manifests point to REAL + AUG views; `real_syn` manifests point to REAL + SYN views. Deduplicate physical source-view HDF5 files when possible; never collapse the four dataset identities into implicit training flags.
+- Acceptance: all four datasets exist as independently loadable validated manifests; cached [N,D] features match online frozen encoder output within tolerance; two phases aligned; same patients and labels are enforced; augmentation provenance and feature references are checked; resumes after interruption.
 
 ### P4 — Offline MIL training & evaluation
 **Files:** `offline/mil.py`, `offline/train_mil.py`, `scripts/train_offline_mil.py`.
 
 - Reuse original dual-phase projection + gated-attention design on cached embeddings, with mean-pooling ablation.
-- Handle variable N/padding and lesion/background flags; train four regimes and real-only validation/test.
+- Handle variable N/padding and lesion/background flags; train independently from four dataset manifests (`real`, `syn`, `real_aug`, `real_syn`) and real-only validation/test.
 - Acceptance: CPU/GPU smoke; deterministic seed runs; same cohort and encoder across four regimes; no encoder gradient or imaging I/O inside MIL epoch; correct patient-level metrics and 95% CI.
 
 ### P5 — Experiment matrix, audits and documentation

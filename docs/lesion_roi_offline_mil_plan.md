@@ -13,7 +13,7 @@ Research questions:
 
 1. Does detector-guided lesion ROI sampling improve classification compared with the repository's original full-liver slice bags?
 2. Under fixed detector proposals, does REAL-supervised encoder adaptation improve over frozen off-the-shelf pretrained encoders?
-3. Under **the same fold-specific, frozen REAL-adapted encoder**, do SYN, REAL_AUG, and REAL_SYN improve patient-level classification relative to REAL?
+3. Under **the same split-specific, frozen REAL-adapted encoder**, do SYN, REAL_AUG, and REAL_SYN improve patient-level classification relative to REAL?
 
 Keep the current `cectcls` pipeline executable and unchanged unless a backward-compatible adapter is necessary.
 
@@ -30,7 +30,7 @@ Keep the current `cectcls` pipeline executable and unchanged unless a backward-c
 ## 3. Data contracts and provenance
 
 ### 3.1 Input
-- Frozen cohort manifest with patient ID, source/center, disease label, image modality (REAL vs SYN), AP/PVP volumes, liver mask if available, geometry/registration QC, and patient-level split/fold membership.
+- Frozen cohort manifest with patient ID, source/center, disease label, image modality (REAL vs SYN), AP/PVP volumes, liver mask if available, geometry/registration QC, and patient-level split/split membership.
 - **Frozen upstream lesion detector** checkpoint and config; predictions on REAL AP/PVP (or approved ROI manifest). Detector confidence, bbox and phase recorded.
 - Optional annotated tumor mask for detector QC or separately identified oracle-ROI ablation. Never silently use ground-truth boxes at test time.
 - SYN volumes mapped to the same patient, with explicit NCCT/CECT or target grid transforms where needed.
@@ -50,7 +50,7 @@ Keep the current `cectcls` pipeline executable and unchanged unless a backward-c
 - LFM: standalone 1-channel ViT-S/8 with its own checkpoint loader; confirm checkpoint state-dict keys and preprocessing before use.
 - Do not reconstruct a different HU window from already clipped 8-bit PNG.
 - REAL_AUG: perform and cache seeded **image-space** augmentations (not post-hoc geometric transformations of feature vectors).
-- Multiple image regimes from the same patient always retain the original fold membership.
+- Multiple image regimes from the same patient always retain the original split membership.
 
 ## 4. Encoders and training arms
 
@@ -64,8 +64,8 @@ Keep the current `cectcls` pipeline executable and unchanged unless a backward-c
 
 For each encoder, benchmark **frozen pretrained** vs **REAL patient-level MIL-supervised fine-tuned**:
 
-- Stage A: only training patients from the relevant fold, REAL AP/PVP ROI bag, dual-phase gated-MIL head; optimize patient-level labels. Freeze/full or partial unfreeze controls by architecture (ResNet18: candidate full; DeiT-Tiny: staged unfreeze/full; DINOv2: final 2–4 blocks, optionally LoRA later). Explicitly test `model.eval()` for frozen encoders and restore training mode only where appropriate.
-- Choose training epoch/hyperparameters using that fold's validation patients only; retain the chosen encoder **without the temporary MIL head**.
+- Stage A: only training patients from the fixed training split, REAL AP/PVP ROI bag, dual-phase gated-MIL head; optimize patient-level labels. Freeze/full or partial unfreeze controls by architecture (ResNet18: candidate full; DeiT-Tiny: staged unfreeze/full; DINOv2: final 2–4 blocks, optionally LoRA later). Explicitly test `model.eval()` for frozen encoders and restore training mode only where appropriate.
+- Choose training epoch/hyperparameters using the validation patients only; retain the chosen encoder **without the temporary MIL head**.
 - Stage B: freeze the encoder; extract all required train/validation/test REAL/SYN/AUG image features **for that fold**.
 - Stage C: train a **fresh** offline-MIL head per regime and seed using the corresponding cached features.
 - Pretrained-only + SYN-MIL is a separate control if making claims about performance without real-label supervision. A REAL-adapted encoder used in SYN-MIL is **not** a SYN-only end-to-end classifier.
@@ -81,18 +81,18 @@ For each encoder, benchmark **frozen pretrained** vs **REAL patient-level MIL-su
 
 **Binding requirement:** these are FOUR named, separately indexed datasets, not just four MIL runtime switches. Each dataset MUST be materialized as a complete `dataset_manifest.jsonl` of patient/view-to-feature references and validated independently. `real_aug` and `real_syn` contain multiple views of the same patient under the SAME patient label; the MIL training loader can sample views in balanced or full mode. They are not new patients and must not be treated as independent patient-level observations. Source feature tensors may be deduplicated on disk using immutable references, but each of the four dataset manifests must be standalone usable with explicit path resolution and checksums.
 
-- Data views must not change underlying patient counts or fold assignments.
+- Data views must not change underlying patient counts or split assignments.
 - Two mixture schedules: **balanced** (one view per patient/epoch, deterministic alternating or seeded sampling) as the primary controlled experiment, and **full** (both views, doubled training inputs) as sensitivity analysis.
-- For all comparisons, freeze the SAME fold-specific REAL-adapted encoder; training recipe, ROI manifest, MIL architecture and validation protocol held constant.
+- For all comparisons, freeze the SAME split-specific REAL-adapted encoder; training recipe, ROI manifest, MIL architecture and validation protocol held constant.
 - Explicitly track missing SYN/phase cases and exclusions. Do not silently skip patients in one arm while retaining them in another; create a matched-cohort analysis set and audit it.
 
-## 6. Splits, leakage controls and statistics
+## 6. Fixed split, leakage controls and statistics
 
 **Mandatory:**
-- Patient-level stratified 5-fold CV; all visits, phases, real/synthetic counterparts, augmentation variants and ROIs for each patient remain in one fold. Guard against duplicate raw patient IDs spanning centers.
-- In each fold, encoder fine-tuning, MIL head fitting, normalization statistics and hyperparameter search use training patients only, with validation used for model selection. Held-out test fold is evaluated **once**.
+- Patient-level stratified fixed-split CV; all visits, phases, real/synthetic counterparts, augmentation variants and ROIs for each patient remain in one fold. Guard against duplicate raw patient IDs spanning centers.
+- Encoder fine-tuning, MIL head fitting, normalization statistics and hyperparameter search use training patients only, with validation used for model selection. Held-out test fold is evaluated **once**.
 - Upstream detector: if trained using tumor labels from the same evaluation cohort, produce out-of-fold detector predictions for validation/test patients; otherwise use an independent externally trained detector. Document detector train IDs and assert no leakage.
-- If a single held-out external test center exists, never use it for encoder/detector/MIL training, selection, or threshold tuning. Training/validation and external testing are separate from inner CV.
+- If a held-out external test center exists, never use it for encoder/detector/MIL training, selection, or threshold tuning. Training/validation and external testing are separate from inner CV.
 - Real and synthetic data from the same patient cannot cross splits; no manual lesion annotations provided as model inference inputs for the primary test.
 - No selecting Top-K with a model trained on held-out patient labels.
 - A fair frozen-encoder comparison must report the extra REAL-supervised encoder adaptation stage.
@@ -106,15 +106,15 @@ Default root:
 ```text
 outputs/lesion_mil_v1/
   roi_manifests/
-    folds.json
-    fold_{k}/patients.jsonl
-    fold_{k}/instances.jsonl
-    fold_{k}/qc.json
+    splits.json
+    fixed_split/patients.jsonl
+    fixed_split/instances.jsonl
+    fixed_split/qc.json
   encoders/
-    fold_{k}/{encoder}/best_encoder.safetensors
-    fold_{k}/{encoder}/finetune_metrics.json
+    fixed_split/{encoder}/best_encoder.safetensors
+    fixed_split/{encoder}/finetune_metrics.json
   features/
-    fold_{k}/{encoder}/
+    fixed_split/{encoder}/
       base_real/{patient_id}.h5
       base_syn/{patient_id}.h5
       base_real_aug/{patient_id}_seed_{seed}.h5
@@ -128,10 +128,10 @@ outputs/lesion_mil_v1/
         real_aug/dataset_qc.json
         real_syn/dataset_qc.json
   mil/
-    fold_{k}/{encoder}/{regime}/{seed}/best.pt
-    fold_{k}/{encoder}/{regime}/{seed}/predictions.jsonl
+    fixed_split/{encoder}/{regime}/{seed}/best.pt
+    fixed_split/{encoder}/{regime}/{seed}/predictions.jsonl
   results/
-    per_fold.csv
+    per_experiment.csv
     pooled_predictions.csv
     metrics_with_95ci.json
   qc/
@@ -161,7 +161,7 @@ Source-view feature HDF5 (one patient per encoder/fold/source view; each of the 
 **Files:** `offline/lesion_bags.py`, `offline/roi_extract.py`, `scripts/build_lesion_bags.py`.
 
 - Read detector outputs/optional approved masks, match AP/PVP, group per lesion across z, sample lesion + matched liver background patches.
-- Export per-fold instance manifests and QC overlays, count tumor/normal/empty/false negatives, preserve provenance.
+- Export split-specific instance manifests and QC overlays, count tumor/normal/empty/false negatives, preserve provenance.
 - Acceptance: deterministic ROI manifest; every included patient has nonempty bag; no input masked annotation used to make primary inference ROI unless explicitly declared oracle ablation; visualization checked on a small hand-reviewed pilot.
 
 ### P2 — Encoder registry & REAL fine-tuning
@@ -169,12 +169,12 @@ Source-view feature HDF5 (one patient per encoder/fold/source view; each of the 
 
 - Implement ResNet18, explicitly named DeiT-Tiny, DINOv2-S/14; optional LFM-DL/LFM-Seq later.
 - Handle real CT HU/channel/resize/norm transforms per encoder; patient-level loss and dual-phase MIL.
-- Acceptance: pretrained weights load with audited missing/unexpected keys; 1-bag overfit smoke test; no patient overlap; separately saved fold-specific encoder weights.
+- Acceptance: pretrained weights load with audited missing/unexpected keys; 1-bag overfit smoke test; no patient overlap; separately saved split-specific encoder weights.
 
 ### P3 — Frozen offline features
 **Files:** `offline/features.py`, `scripts/extract_offline_features.py`.
 
-- Construct four explicit offline feature datasets: `real`, `syn`, `real_aug`, `real_syn`. For EACH dataset emit its own complete `dataset_manifest.jsonl` and QC report. Extract REAL, SYN, and seeded image-augmented REAL features with frozen fold-specific encoders. `real_aug` manifests point to REAL + AUG views; `real_syn` manifests point to REAL + SYN views. Deduplicate physical source-view HDF5 files when possible; never collapse the four dataset identities into implicit training flags.
+- Construct four explicit offline feature datasets: `real`, `syn`, `real_aug`, `real_syn`. For EACH dataset emit its own complete `dataset_manifest.jsonl` and QC report. Extract REAL, SYN, and seeded image-augmented REAL features with frozen split-specific encoders. `real_aug` manifests point to REAL + AUG views; `real_syn` manifests point to REAL + SYN views. Deduplicate physical source-view HDF5 files when possible; never collapse the four dataset identities into implicit training flags.
 - Acceptance: all four datasets exist as independently loadable validated manifests; cached [N,D] features match online frozen encoder output within tolerance; two phases aligned; same patients and labels are enforced; augmentation provenance and feature references are checked; resumes after interruption.
 
 ### P4 — Offline MIL training & evaluation
@@ -184,25 +184,27 @@ Source-view feature HDF5 (one patient per encoder/fold/source view; each of the 
 - Handle variable N/padding and lesion/background flags; train independently from four dataset manifests (`real`, `syn`, `real_aug`, `real_syn`) and real-only validation/test.
 - Acceptance: CPU/GPU smoke; deterministic seed runs; same cohort and encoder across four regimes; no encoder gradient or imaging I/O inside MIL epoch; correct patient-level metrics and 95% CI.
 
-### P5 — Experiment matrix, audits and documentation
+### P5 — Single-split experiment matrix, audits and documentation
 **Files:** `scripts/run_offline_matrix.py`, `scripts/audit_offline_results.py`, `docs/lesion_roi_offline_mil.md`.
 
-- Run E1–E3 × {pretrained only, real-adapted} × 4 regimes × folds. Optional E4–E5 after checkpoint validation.
+- Run E1–E3 × {pretrained only, real-adapted} × 4 regimes. Optional E4–E5 after checkpoint validation.
 - Compare original whole-liver bag vs ROI bag at fixed encoder/MIL, pretrained vs REAL-tuned encoders, and 4 data regimes under fixed encoder.
-- Acceptance: one-command pilot then reproducible fold matrix; patient-level bootstrap CI and paired regime deltas; publishable CSV tables; current `cectcls train` unchanged.
+- Acceptance: one-command pilot then reproducible experiment matrix; patient-level bootstrap CI and paired regime deltas; publishable CSV tables; current `cectcls train` unchanged.
 
 ## 9. Proposed CLI
 
 ```bash
 # No data modifications in planning stage. Commands below are future interfaces.
 python scripts/build_lesion_bags.py --cases ... --detector-predictions ... --splits ... --out ...
-python scripts/finetune_real_encoder.py --bags ... --encoder dinov2_s14 --fold 0 --out ...
+python scripts/finetune_real_encoder.py --bags ... --encoder dinov2_s14 --out ...
 python scripts/extract_offline_features.py --bags ... --encoder-weights ... --regimes real,syn,real_aug,real_syn --out ...
-python scripts/train_offline_mil.py --features ... --regime real_syn --mix balanced --fold 0 --out ...
+python scripts/train_offline_mil.py --features ... --regime real_syn --mix balanced --out ...
 python scripts/run_offline_matrix.py --config configs/lesion_mil_v1.yaml --pilot
 ```
 
 ## 10. Scope exclusions / decisions before full training
+
+- **No 5-fold cross-validation in V1.** Build and verify one fixed patient-level train/val/test split. Do not implement fold loops, fold-specific artifacts or CV aggregation in the first release. Five-fold may be considered later as a separate extension.
 
 - No change to the existing 1,183-patient locked main-five cohort or its split metadata without an explicit approved new cohort version.
 - Disease label sets (five-class vs three-class vs extended six-class) remain dataset configuration, never inferred from folder names.
